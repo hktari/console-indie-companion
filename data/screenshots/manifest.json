@@ -1,0 +1,177 @@
+[
+  {
+    "filename": "tunic_steam_01.png",
+    "game_state": "overworld_exploration",
+    "location": "Forest Area",
+    "description": "Player exploring a forest biome with trees and natural terrain",
+    "source": "Steam Store"
+  },
+  {
+    "filename": "tunic_steam_02.png",
+    "game_state": "overworld_exploration",
+    "location": "Ruins",
+    "description": "Exploring ancient ruins with stone structures and mysterious architecture",
+    "source": "Steam Store"
+  },
+  {
+    "filename": "tunic_steam_03.png",
+    "game_state": "boss_fight",
+    "location": "Boss Arena",
+    "description": "Combat encounter with a boss enemy, showing health bars and action",
+    "source": "Steam Store"
+  },
+  {
+    "filename": "tunic_steam_04.png",
+    "game_state": "overworld_exploration",
+    "location": "Cavern",
+    "description": "Underground cavern exploration with dark atmosphere",
+    "source": "Steam Store"
+  },
+  {
+    "filename": "tunic_steam_05.png",
+    "game_state": "puzzle_area",
+    "location": "Puzzle Chamber",
+    "description": "Puzzle solving area with interactive elements",
+    "source": "Steam Store"
+  },
+  {
+    "filename": "tunic_steam_06.png",
+    "game_state": "npc_dialogue",
+    "location": "Village",
+    "description": "NPC interaction and dialogue scene",
+    "source": "Steam Store"
+  },
+  {
+    "filename": "tunic_steam_07.png",
+    "game_state": "inventory_manual",
+    "location": "Menu",
+    "description": "Game manual or inventory screen showing collected items",
+    "source": "Steam Store"
+  },
+  {
+    "filename": "tunic_steam_08.png",
+    "game_state": "boss_fight",
+    "location": "Boss Arena",
+    "description": "Boss battle with combat mechanics visible",
+    "source": "Steam Store"
+  },
+  {
+    "filename": "tunic_steam_09.png",
+    "game_state": "map_screen",
+    "location": "World Map",
+    "description": "Game world map or navigation screen",
+    "source": "Steam Store"
+  },
+  {
+    "filename": "tunic_steam_10.png",
+    "game_state": "overworld_exploration",
+    "location": "Biome",
+    "description": "Exploration of a game biome with environmental details",
+    "source": "Steam Store"
+  },
+  {
+    "filename": "tunic_kotaku_01.png",
+    "game_state": "overworld_exploration",
+    "location": "Forest",
+    "description": "Fox protagonist exploring a lush forest environment",
+    "source": "Kotaku"
+  },
+  {
+    "filename": "tunic_kotaku_02.png",
+    "game_state": "boss_fight",
+    "location": "Boss Chamber",
+    "description": "Epic boss battle with dramatic lighting",
+    "source": "Kotaku"
+  },
+  {
+    "filename": "tunic_kotaku_03.png",
+    "game_state": "overworld_exploration",
+    "location": "Ruins",
+    "description": "Exploring ancient ruins with isometric perspective",
+    "source": "Kotaku"
+  },
+  {
+    "filename": "tunic_kotaku_04.png",
+    "game_state": "puzzle_area",
+    "location": "Puzzle Room",
+    "description": "Solving environmental puzzles",
+    "source": "Kotaku"
+  },
+  {
+    "filename": "tunic_kotaku_05.png",
+    "game_state": "npc_dialogue",
+    "location": "NPC Area",
+    "description": "Interaction with non-player characters",
+    "source": "Kotaku"
+  },
+  {
+    "filename": "tunic_kotaku_06.png",
+    "game_state": "inventory_manual",
+    "location": "Manual Pages",
+    "description": "Game manual pages with in-game language and illustrations",
+    "source": "Kotaku"
+  },
+  {
+    "filename": "tunic_kotaku_07.png",
+    "game_state": "boss_fight",
+    "location": "Boss Arena",
+    "description": "Combat with boss enemy showing attack patterns",
+    "source": "Kotaku"
+  },
+  {
+    "filename": "tunic_kotaku_08.png",
+    "game_state": "overworld_exploration",
+    "location": "Cavern",
+    "description": "Deep cavern exploration with atmospheric lighting",
+    "source": "Kotaku"
+  },
+  {
+    "filename": "tunic_kotaku_09.png",
+    "game_state": "map_screen",
+    "location": "Map",
+    "description": "Game map or world navigation interface",
+    "source": "Kotaku"
+  },
+  {
+    "filename": "tunic_kotaku_10.png",
+    "game_state": "puzzle_area",
+    "location": "Puzzle Chamber",
+    "description": "Complex puzzle solving mechanics",
+    "source": "Kotaku"
+  },
+  {
+    "filename": "tunic_kotaku_11.png",
+    "game_state": "npc_dialogue",
+    "location": "Shop",
+    "description": "Shop or trading interface with NPCs",
+    "source": "Kotaku"
+  },
+  {
+    "filename": "tunic_kotaku_12.png",
+    "game_state": "overworld_exploration",
+    "location": "Biome",
+    "description": "Exploration of diverse game biome",
+    "source": "Kotaku"
+  },
+  {
+    "filename": "tunic_kotaku_13.png",
+    "game_state": "boss_fight",
+    "location": "Boss Arena",
+    "description": "Boss encounter with combat visible",
+    "source": "Kotaku"
+  },
+  {
+    "filename": "tunic_kotaku_14.png",
+    "game_state": "death_loading",
+    "location": "Game Over",
+    "description": "Death or loading screen",
+    "source": "Kotaku"
+  },
+  {
+    "filename": "tunic_kotaku_15.png",
+    "game_state": "inventory_manual",
+    "location": "Manual",
+    "description": "Game manual reconstruction mechanic",
+    "source": "Kotaku"
+  }
+]

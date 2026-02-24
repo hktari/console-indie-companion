@@ -1,0 +1,359 @@
+"""Screen capture module using X11/xdotool and mss.
+
+Finds a window by name, captures its screen region, and returns JPEG bytes.
+Designed for Linux with X11 (Wayland not supported).
+"""
+
+import argparse
+import io
+import logging
+import os
+import re
+import subprocess
+import threading
+import time
+from dataclasses import dataclass
+from typing import Optional
+
+import mss
+from PIL import Image
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class WindowGeometry:
+    """Position and size of a window on screen."""
+
+    window_id: str
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+class CaptureService:
+    """Captures screenshots of a specific window by name using xdotool + mss."""
+
+    def __init__(self, window_name: str, interval: float = 3.0, jpeg_quality: int = 85):
+        """Initialize capture for a specific window.
+
+        Args:
+            window_name: Substring to match in window title (via xdotool search --name).
+            interval: Seconds between captures in periodic mode.
+            jpeg_quality: JPEG compression quality (1-100). Lower = smaller files.
+        """
+        self.window_name = window_name
+        self.interval = interval
+        self.jpeg_quality = jpeg_quality
+
+        self._geometry: Optional[WindowGeometry] = None
+        self._latest_frame: Optional[bytes] = None
+        self._frame_lock = threading.Lock()
+
+        self._capture_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+
+    def find_window(self) -> bool:
+        """Find window by name using xdotool.
+
+        Returns:
+            True if a matching window was found, False otherwise.
+        """
+        try:
+            result = subprocess.run(
+                ["xdotool", "search", "--name", f"^{re.escape(self.window_name)}$"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except FileNotFoundError:
+            logger.error("xdotool not found. Install with: sudo apt-get install -y xdotool")
+            return False
+        except subprocess.TimeoutExpired:
+            logger.error("xdotool search timed out")
+            return False
+
+        if result.returncode != 0 or not result.stdout.strip():
+            logger.warning("No window found matching '%s'", self.window_name)
+            self._geometry = None
+            return False
+
+        # Find the window with the largest area (most likely the gameplay window)
+        window_ids = result.stdout.strip().splitlines()
+        if len(window_ids) > 1:
+            # Get geometry for all windows and pick the largest
+            largest_window_id = None
+            largest_area = 0
+            for wid in window_ids:
+                wid = wid.strip()
+                if self._update_geometry(wid):
+                    if self._geometry is not None:
+                        area = self._geometry.width * self._geometry.height
+                        if area > largest_area:
+                            largest_area = area
+                            largest_window_id = wid
+            if largest_window_id is None:
+                logger.warning("No valid windows found matching '%s'", self.window_name)
+                self._geometry = None
+                return False
+            window_id = largest_window_id
+            logger.info(
+                "Found %d windows matching '%s', selected largest: %s (%dx%d, area=%d)",
+                len(window_ids),
+                self.window_name,
+                window_id,
+                self._geometry.width if self._geometry else 0,
+                self._geometry.height if self._geometry else 0,
+                largest_area,
+            )
+            return True
+        else:
+            # Single window, use it
+            window_id = window_ids[0].strip()
+            return self._update_geometry(window_id)
+
+    def _update_geometry(self, window_id: str) -> bool:
+        """Get window position and size via xdotool getwindowgeometry.
+
+        Args:
+            window_id: X11 window ID string.
+
+        Returns:
+            True if geometry was successfully retrieved.
+        """
+        try:
+            result = subprocess.run(
+                ["xdotool", "getwindowgeometry", window_id],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except subprocess.TimeoutExpired:
+            logger.error("xdotool getwindowgeometry timed out")
+            return False
+
+        if result.returncode != 0:
+            logger.warning("Failed to get geometry for window %s: %s", window_id, result.stderr.strip())
+            self._geometry = None
+            return False
+
+        # Parse output like:
+        #   Window 12345678
+        #   Position: 100,200 (screen: 0)
+        #   Geometry: 800x600
+        output = result.stdout
+        pos_match = re.search(r"Position:\s*(\d+),(\d+)", output)
+        geo_match = re.search(r"Geometry:\s*(\d+)x(\d+)", output)
+
+        if not pos_match or not geo_match:
+            logger.error("Could not parse xdotool geometry output:\n%s", output)
+            self._geometry = None
+            return False
+
+        self._geometry = WindowGeometry(
+            window_id=window_id,
+            x=int(pos_match.group(1)),
+            y=int(pos_match.group(2)),
+            width=int(geo_match.group(1)),
+            height=int(geo_match.group(2)),
+        )
+        logger.debug(
+            "Window '%s' at (%d,%d) size %dx%d",
+            self.window_name,
+            self._geometry.x,
+            self._geometry.y,
+            self._geometry.width,
+            self._geometry.height,
+        )
+        return True
+
+    def capture_once(self) -> Optional[bytes]:
+        """Capture one screenshot of the target window.
+
+        Re-finds the window each time to handle moved/resized windows.
+
+        Returns:
+            JPEG bytes of the captured region, or None on failure.
+        """
+        if not self.find_window():
+            return None
+
+        geo = self._geometry
+        if geo is None:
+            return None
+
+        if geo.width <= 0 or geo.height <= 0:
+            logger.warning("Window has invalid dimensions: %dx%d", geo.width, geo.height)
+            return None
+
+        try:
+            with mss.mss() as sct:
+                # Clamp capture region to virtual screen bounds
+                screen = sct.monitors[0]  # monitors[0] is the combined virtual screen
+                left = max(geo.x, screen["left"])
+                top = max(geo.y, screen["top"])
+                right = min(geo.x + geo.width, screen["left"] + screen["width"])
+                bottom = min(geo.y + geo.height, screen["top"] + screen["height"])
+                clamped_w = right - left
+                clamped_h = bottom - top
+
+                if clamped_w <= 0 or clamped_h <= 0:
+                    logger.warning(
+                        "Window region outside screen bounds: (%d,%d) %dx%d vs screen %s",
+                        geo.x, geo.y, geo.width, geo.height, screen,
+                    )
+                    return None
+
+                monitor = {"left": left, "top": top, "width": clamped_w, "height": clamped_h}
+                screenshot = sct.grab(monitor)
+        except Exception:
+            logger.exception("mss screen grab failed for window '%s'", self.window_name)
+            return None
+
+        # Convert to JPEG bytes via Pillow
+        try:
+            img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=self.jpeg_quality)
+            jpeg_bytes = buf.getvalue()
+        except Exception:
+            logger.exception("Image conversion to JPEG failed")
+            return None
+
+        with self._frame_lock:
+            self._latest_frame = jpeg_bytes
+
+        logger.debug("Captured %d bytes JPEG from window '%s'", len(jpeg_bytes), self.window_name)
+        return jpeg_bytes
+
+    def get_latest_frame(self) -> Optional[bytes]:
+        """Get the most recently captured frame (thread-safe).
+
+        Returns:
+            JPEG bytes of the last successful capture, or None if no capture yet.
+        """
+        with self._frame_lock:
+            return self._latest_frame
+
+    def start(self) -> None:
+        """Start periodic capture in a background daemon thread."""
+        if self._capture_thread is not None and self._capture_thread.is_alive():
+            logger.warning("Capture thread already running")
+            return
+
+        self._stop_event.clear()
+        self._capture_thread = threading.Thread(
+            target=self._capture_loop,
+            name=f"capture-{self.window_name}",
+            daemon=True,
+        )
+        self._capture_thread.start()
+        logger.info("Started periodic capture for '%s' every %.1fs", self.window_name, self.interval)
+
+    def stop(self) -> None:
+        """Stop periodic capture and wait for thread to finish."""
+        if self._capture_thread is None or not self._capture_thread.is_alive():
+            return
+
+        self._stop_event.set()
+        self._capture_thread.join(timeout=self.interval + 2)
+        if self._capture_thread.is_alive():
+            logger.warning("Capture thread did not stop cleanly")
+        else:
+            logger.info("Capture thread stopped")
+        self._capture_thread = None
+
+    def _capture_loop(self) -> None:
+        """Internal loop for periodic capture. Runs in background thread."""
+        while not self._stop_event.is_set():
+            try:
+                self.capture_once()
+            except Exception:
+                logger.exception("Unexpected error in capture loop")
+            self._stop_event.wait(timeout=self.interval)
+
+    @property
+    def geometry(self) -> Optional[WindowGeometry]:
+        """Current window geometry, or None if window not found."""
+        return self._geometry
+
+
+def main() -> None:
+    """CLI entry point for testing screen capture."""
+    parser = argparse.ArgumentParser(
+        description="Capture screenshots of a window by name.",
+    )
+    parser.add_argument(
+        "--window",
+        required=True,
+        help="Window name (substring match) to capture.",
+    )
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=10,
+        help="Number of captures to take (default: 10).",
+    )
+    parser.add_argument(
+        "--output",
+        default="/tmp/captures/",
+        help="Output directory for captured images (default: /tmp/captures/).",
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=3.0,
+        help="Seconds between captures (default: 3).",
+    )
+    parser.add_argument(
+        "--quality",
+        type=int,
+        default=85,
+        help="JPEG quality 1-100 (default: 85).",
+    )
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    os.makedirs(args.output, exist_ok=True)
+
+    service = CaptureService(
+        window_name=args.window,
+        interval=args.interval,
+        jpeg_quality=args.quality,
+    )
+
+    logger.info("Looking for window '%s'...", args.window)
+    if not service.find_window():
+        logger.error("Could not find window '%s'. Exiting.", args.window)
+        return
+
+    geo = service.geometry
+    if geo:
+        logger.info("Found window at (%d,%d) size %dx%d", geo.x, geo.y, geo.width, geo.height)
+
+    captured = 0
+    for i in range(1, args.count + 1):
+        frame = service.capture_once()
+        if frame is not None:
+            filename = f"capture_{i:03d}.jpg"
+            filepath = os.path.join(args.output, filename)
+            with open(filepath, "wb") as f:
+                f.write(frame)
+            captured += 1
+            logger.info("Saved %s (%d bytes)", filepath, len(frame))
+        else:
+            logger.warning("Capture %d/%d failed", i, args.count)
+
+        if i < args.count:
+            time.sleep(args.interval)
+
+    logger.info("Done. Captured %d/%d frames to %s", captured, args.count, args.output)
+
+
+if __name__ == "__main__":
+    main()

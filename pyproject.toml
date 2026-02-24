@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tunic-companion"
+version = "0.1.0"
+description = "Tunic voice companion POC - desktop application for voice-driven game interaction"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Tunic Companion Team"}
+]
+
+dependencies = [
+    "mss>=3.8.1",
+    "google-genai>=1.0.0",
+    "openai>=1.60.0",
+    "websockets>=13.0",
+    "chromadb>=0.3.21",
+    "beautifulsoup4>=4.11.0",
+    "requests>=2.28.0",
+    "python-dotenv>=0.20.0",
+    "sounddevice>=0.4.5",
+    "numpy>=1.23.0",
+    "pillow>=12.1.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0"
+]
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "."

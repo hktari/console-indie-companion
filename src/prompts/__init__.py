@@ -1,0 +1,11 @@
+from .tunic_companion import (
+    SYSTEM_INSTRUCTIONS,
+    CONTEXT_UPDATE_TEMPLATE,
+    VLM_ANALYSIS_PROMPT,
+)
+
+__all__ = [
+    "SYSTEM_INSTRUCTIONS",
+    "CONTEXT_UPDATE_TEMPLATE",
+    "VLM_ANALYSIS_PROMPT",
+]
