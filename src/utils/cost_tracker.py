@@ -33,7 +33,7 @@ class CostTracker:
     Note: Gemini batch mode can roughly halve costs (~$0.15 in / $1.25 out for 2.5 Flash).
     """
 
-    # Cost estimates per token (USD)
+    # Cost estimates per token (USD) - Updated February 2026
     COSTS = {
         "gemini": {
             "gemini-2.5-flash": {
@@ -46,8 +46,19 @@ class CostTracker:
             },
         },
         "openai": {
-            "gpt-4o-realtime-preview": {
-                "audio_minute": 0.06,  # $0.06 per minute
+            "gpt-realtime": {
+                "input_tokens": 32.00 / 1_000_000,    # $5.00 per 1M text tokens
+                "output_tokens": 64.00 / 1_000_000,  # $20.00 per 1M text tokens
+                "audio_input_tokens": 40.00 / 1_000_000, # $40.00 per 1M audio tokens
+                "audio_output_tokens": 80.00 / 1_000_000, # $80.00 per 1M audio tokens
+                "audio_minute": 0.06,  # Approx $0.06 per minute
+            },
+            "gpt-realtime-mini": {
+                "input_tokens": 0.60 / 1_000_000,    # $0.60 per 1M text tokens
+                "output_tokens": 2.40 / 1_000_000,   # $2.40 per 1M text tokens
+                "audio_input_tokens": 10.00 / 1_000_000, # $10.00 per 1M audio tokens
+                "audio_output_tokens": 20.00 / 1_000_000, # $20.00 per 1M audio tokens
+                "audio_minute": 0.02,  # Approx $0.02 per minute
             },
         },
     }

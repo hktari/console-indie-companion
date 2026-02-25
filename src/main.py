@@ -189,7 +189,10 @@ async def run_pipeline(args: argparse.Namespace) -> None:
         else:
             logger.info("Mode: LIVE capture of window name '%s'", window_name)
 
-    vlm = SceneAnalyzer(model=args.model)
+    cost_tracker = CostTracker()
+    logger.info("Cost tracker initialised")
+
+    vlm = SceneAnalyzer(model=args.model, cost_tracker=cost_tracker)
     logger.info("VLM (Gemini) initialised")
 
     context_mgr = ContextManager()
@@ -197,7 +200,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
 
     voice: Optional[VoiceSession] = None
     if not args.no_voice:
-        voice = VoiceSession(system_instructions=SYSTEM_INSTRUCTIONS)
+        voice = VoiceSession(system_instructions=SYSTEM_INSTRUCTIONS, cost_tracker=cost_tracker)
         logger.info("Voice session created")
 
     # -- 2. Start capture ------------------------------------------------
@@ -220,8 +223,6 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     start_time = asyncio.get_event_loop().time()
     last_frame: Optional[bytes] = None
     analysis_count = 0
-    cost_tracker = CostTracker()
-    logger.info("Cost tracker initialised")
 
     try:
         while running:

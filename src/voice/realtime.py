@@ -18,7 +18,7 @@ import os
 import sys
 import threading
 import time
-from typing import Optional
+from typing import Optional, Any
 
 import numpy as np
 
@@ -76,12 +76,14 @@ class VoiceSession:
         self,
         api_key: Optional[str] = None,
         system_instructions: str = "",
+        cost_tracker: Optional[Any] = None,
     ) -> None:
         """Initialise with OpenAI API key and initial system instructions.
 
         Args:
             api_key: OpenAI API key. Falls back to ``OPENAI_API_KEY`` env var.
             system_instructions: Initial instructions sent via ``session.update``.
+            cost_tracker: Optional CostTracker instance to log API usage.
         """
         load_dotenv()
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
@@ -91,6 +93,7 @@ class VoiceSession:
             )
 
         self.system_instructions = system_instructions or DEFAULT_INSTRUCTIONS
+        self._cost_tracker = cost_tracker
 
         # Connection state
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
@@ -109,6 +112,9 @@ class VoiceSession:
         # Session rotation tracking
         self._session_start_time: Optional[float] = None
         self._conversation_context: list[str] = []  # Recent context for rotation
+        
+        # Audio cost tracking
+        self._audio_session_start: Optional[float] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -181,8 +187,10 @@ class VoiceSession:
             asyncio.create_task(self._mic_input_loop(), name="mic_input"),
         ]
 
-        # Initialize session rotation timer
+        # Initialize session rotation and cost tracking timer
         self._session_start_time = time.time()
+        if self._audio_session_start is None:
+            self._audio_session_start = time.time()
 
         logger.info("Voice session started – speak into your microphone")
 
@@ -190,6 +198,16 @@ class VoiceSession:
         """Gracefully close the WebSocket connection and stop audio."""
         logger.info("Stopping voice session …")
         self._connected = False
+        
+        # Log cost if tracker available
+        if self._cost_tracker and self._audio_session_start:
+            duration = time.time() - self._audio_session_start
+            self._cost_tracker.log_call(
+                service="openai",
+                model=MODEL,
+                duration_seconds=duration
+            )
+            self._audio_session_start = None
 
         for task in self._tasks:
             task.cancel()

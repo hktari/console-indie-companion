@@ -7,7 +7,7 @@ import re
 import time
 import argparse
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 from dotenv import load_dotenv
 from google import genai
@@ -48,13 +48,19 @@ class SceneAnalyzer:
 
     SUPPORTED_MODELS = ("gemini-2.5-flash", "gemini-2.5-flash-lite")
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.5-flash-lite"):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: str = "gemini-2.5-flash-lite",
+        cost_tracker: Optional[Any] = None,
+    ):
         """Initialize with Gemini API key (from env if not provided).
         
         Args:
             api_key: Gemini API key. Falls back to GEMINI_API_KEY env var.
             model: Gemini model name. Supports 'gemini-2.5-flash' (default) 
                    and 'gemini-2.5-flash-lite' (budget).
+            cost_tracker: Optional CostTracker instance to log API usage.
         """
         load_dotenv()
         self._api_key = api_key or os.environ.get("GEMINI_API_KEY")
@@ -64,6 +70,7 @@ class SceneAnalyzer:
             )
         self._client = genai.Client(api_key=self._api_key)
         self._model = model
+        self._cost_tracker = cost_tracker
 
     def analyze_screenshot(self, image_data: bytes, mime_type: str = "image/png") -> dict:
         """Analyze a game screenshot, return structured scene description.
@@ -93,6 +100,17 @@ class SceneAnalyzer:
                         response_mime_type="application/json",
                     ),
                 )
+                
+                # Log cost if tracker is available
+                if self._cost_tracker and response.usage_metadata:
+                    self._cost_tracker.log_call(
+                        service="gemini",
+                        model=self._model,
+                        input_tokens=response.usage_metadata.prompt_token_count,
+                        output_tokens=response.usage_metadata.candidates_token_count,
+                    )
+                    
+                logger.info("VLM analysis result: %s", response.text)
                 return self._parse_response(response.text)
 
             except Exception as e:
