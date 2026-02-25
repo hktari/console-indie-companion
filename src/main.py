@@ -54,10 +54,14 @@ def parse_args() -> argparse.Namespace:
         prog="python -m src.main",
         description="Tunic Voice Companion — capture → VLM → context → voice pipeline",
     )
-    parser.add_argument(
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
         "--window",
-        default="PS Remote Play",
-        help="Window name for live capture (default: 'PS Remote Play').",
+        help="Window name for live capture (e.g. 'chiaki-ng' or 'PS Remote Play').",
+    )
+    group.add_argument(
+        "--window-id",
+        help="X11 window ID in hex (e.g. 0xb60000e) or decimal.",
     )
     parser.add_argument(
         "--interval",
@@ -167,8 +171,17 @@ async def run_pipeline(args: argparse.Namespace) -> None:
         capture = ReplayCapture(args.screenshot_dir, interval=args.interval)
         logger.info("Mode: REPLAY from %s", args.screenshot_dir)
     else:
-        capture = CaptureService(args.window, interval=args.interval)
-        logger.info("Mode: LIVE capture of window '%s'", args.window)
+        # Default to "PS Remote Play" if neither is provided
+        window_name = args.window or ("PS Remote Play" if not args.window_id else None)
+        capture = CaptureService(
+            window_id=args.window_id,
+            window_name=window_name,
+            interval=args.interval
+        )
+        if args.window_id:
+            logger.info("Mode: LIVE capture of window ID %s", args.window_id)
+        else:
+            logger.info("Mode: LIVE capture of window name '%s'", window_name)
 
     vlm = SceneAnalyzer(model=args.model)
     logger.info("VLM (Gemini) initialised")

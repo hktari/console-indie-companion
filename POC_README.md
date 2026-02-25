@@ -39,8 +39,25 @@ cp .env.example .env
 #   GEMINI_API_KEY=your-key-here
 #   OPENAI_API_KEY=your-key-here
 ```
+### 3. Identify your Remote Play window
 
-### 3. Run the POC (Replay Mode — No PS5 Needed)
+If you are using **Chiaki-ng** (AppImage), the pipeline now automatically tries to find the correct window by scanning your running processes for `AppRun.wrapped`.
+
+```bash
+# Option A: Automatic (Works for Chiaki-ng AppImage)
+python -m src.main
+
+# Option B: Use a specific Window ID (if automatic fails)
+# Use xwininfo to find the hex ID:
+xwininfo
+# Click on your game window. Note the 'Window id' (e.g., 0xb60000e)
+python -m src.main --window-id 0xb60000e
+
+# Option C: Find by name
+python -m src.main --window chiaki-ng
+```
+
+### 4. Run the POC (Replay Mode — No PS5 Needed)
 
 The easiest way to test the POC is **replay mode**, which uses pre-captured Tunic screenshots instead of a live PS5:
 
@@ -71,7 +88,8 @@ python -m src.main --replay --duration 60
 python -m src.main [OPTIONS]
 
 Options:
-  --window WINDOW       Window name for live capture (default: 'PS Remote Play')
+  --window WINDOW       Window name for live capture (e.g. 'chiaki-ng')
+  --window-id ID        Specific X11 window ID (hex or decimal)
   --interval INTERVAL   Screenshot interval in seconds (default: 3)
   --replay              Use replay mode (pre-captured screenshots)
   --screenshot-dir DIR  Directory for replay mode (default: data/screenshots/)
@@ -83,8 +101,15 @@ Options:
 ### Example Commands
 
 ```bash
+# Live mode using window name
+python -m src.main --window chiaki-ng
+
+# Live mode using specific window ID (if name search fails)
+python -m src.main --window-id 0xb60000e
+
 # Replay mode without voice (cheapest — only Gemini API calls)
 python -m src.main --replay --no-voice --duration 120
+```
 
 # Replay mode with voice (full experience)
 python -m src.main --replay --duration 120

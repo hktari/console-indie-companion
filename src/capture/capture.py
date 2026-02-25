@@ -35,15 +35,17 @@ class WindowGeometry:
 class CaptureService:
     """Captures screenshots of a specific window by ID using xdotool + mss."""
 
-    def __init__(self, window_id: str, interval: float = 3.0, jpeg_quality: int = 85):
+    def __init__(self, window_id: Optional[str] = None, window_name: Optional[str] = None, interval: float = 3.0, jpeg_quality: int = 85):
         """Initialize capture for a specific window.
 
         Args:
-            window_id: X11 window ID (from xdotool or similar).
+            window_id: X11 window ID (hex or decimal). If provided, takes precedence.
+            window_name: Name of the window to search for if window_id is not provided.
             interval: Seconds between captures in periodic mode.
             jpeg_quality: JPEG compression quality (1-100). Lower = smaller files.
         """
         self.window_id = window_id
+        self.window_name = window_name
         self.interval = interval
         self.jpeg_quality = jpeg_quality
 
@@ -54,12 +56,94 @@ class CaptureService:
         self._capture_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
+    def find_window(self) -> bool:
+        """Find the window ID based on process or name if not already set.
+
+        Returns:
+            True if a window was found or already set.
+        """
+        if self.window_id:
+            # Validate if it's a valid hex or dec string and refresh
+            return self.refresh_geometry()
+
+        # Technique 1: Try finding by PID (most reliable for Chiaki/AppImage)
+        try:
+            # Look for Chiaki's AppRun.wrapped or similar process
+            ps_result = subprocess.run(
+                ["ps", "aux"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if ps_result.returncode == 0:
+                # Target the specific Chiaki AppRun process which usually has high CPU/Memory
+                for line in ps_result.stdout.splitlines():
+                    if "AppRun.wrapped" in line or "chiaki-ng" in line:
+                        parts = line.split()
+                        if len(parts) > 1:
+                            pid = parts[1]
+                            # Try xdotool search --pid
+                            xd_result = subprocess.run(
+                                ["xdotool", "search", "--pid", pid],
+                                capture_output=True,
+                                text=True,
+                                timeout=5,
+                            )
+                            if xd_result.returncode == 0 and xd_result.stdout.strip():
+                                ids = xd_result.stdout.strip().split("\n")
+                                self.window_id = ids[0] # Usually the first one for PID search
+                                logger.info("Found window ID %s via PID %s", self.window_id, pid)
+                                if self.refresh_geometry():
+                                    return True
+        except Exception as e:
+            logger.debug("PID search failed: %s", e)
+
+        if not self.window_name:
+            logger.error("No window_id, window_name, and PID discovery failed")
+            return False
+
+        logger.info("Searching for window with name: %s", self.window_name)
+        try:
+            # Try searching by name exactly first
+            result = subprocess.run(
+                ["xdotool", "search", "--name", self.window_name],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # Take the last one, as it's often the actual UI window vs hidden ones
+                ids = result.stdout.strip().split("\n")
+                self.window_id = ids[-1]
+                logger.info("Found window ID: %s", self.window_id)
+                return self.refresh_geometry()
+
+            # Fallback: search by class
+            result = subprocess.run(
+                ["xdotool", "search", "--class", self.window_name],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                ids = result.stdout.strip().split("\n")
+                self.window_id = ids[-1]
+                logger.info("Found window ID by class: %s", self.window_id)
+                return self.refresh_geometry()
+
+        except Exception as e:
+            logger.error("Error searching for window: %s", e)
+
+        return False
+
     def refresh_geometry(self) -> bool:
         """Refresh window geometry from the window ID.
 
         Returns:
             True if geometry was successfully retrieved.
         """
+        if not self.window_id:
+            return self.find_window()
         return self._update_geometry(self.window_id)
 
     def _update_geometry(self, window_id: str) -> bool:
@@ -254,12 +338,16 @@ class CaptureService:
 def main() -> None:
     """CLI entry point for testing screen capture."""
     parser = argparse.ArgumentParser(
-        description="Capture screenshots of a window by ID.",
+        description="Capture screenshots of a window by ID or name.",
     )
-    parser.add_argument(
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
         "--window-id",
-        required=True,
-        help="X11 window ID to capture (get via: xdotool search --name <title>).",
+        help="X11 window ID (hex or decimal) to capture.",
+    )
+    group.add_argument(
+        "--window-name",
+        help="Window name/title to search for via xdotool.",
     )
     parser.add_argument(
         "--count",
@@ -295,13 +383,18 @@ def main() -> None:
 
     service = CaptureService(
         window_id=args.window_id,
+        window_name=args.window_name,
         interval=args.interval,
         jpeg_quality=args.quality,
     )
 
-    logger.info("Capturing window %s...", args.window_id)
-    if not service.refresh_geometry():
-        logger.error("Could not get geometry for window %s. Exiting.", args.window_id)
+    if args.window_id:
+        logger.info("Capturing window ID %s...", args.window_id)
+    else:
+        logger.info("Searching for window '%s'...", args.window_name)
+
+    if not service.find_window():
+        logger.error("Could not locate window. Exiting.")
         return
 
     geo = service.geometry
