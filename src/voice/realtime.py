@@ -18,9 +18,7 @@ import os
 import sys
 import threading
 import time
-import urllib.request
-import urllib.error
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
 import numpy as np
 
@@ -34,7 +32,6 @@ import websockets
 from dotenv import load_dotenv
 
 load_dotenv()
-from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -505,6 +502,11 @@ class VoiceSession:
                 item.get("role"),
                 item.get("type"),
             )
+            
+        elif event_type == "conversation.item.input_audio_transcription.completed":
+            transcript = event.get("transcript", "")
+            if transcript:
+                print(f"\n[You] {transcript}\n")
 
         # -- Response lifecycle ------------------------------------------
         elif event_type == "response.created":
@@ -764,10 +766,10 @@ async def _run_session(duration: int, instructions: str) -> None:
 
     try:
         await session.start()
-        print(f"\n🎙️  Voice session active — speak into your microphone!")
+        print("\n🎙️  Voice session active — speak into your microphone!")
         print(f"   Duration : {duration}s")
         print(f"   Model    : {MODEL}")
-        print(f"   Press Ctrl+C to stop early\n")
+        print("   Press Ctrl+C to stop early\n")
         await asyncio.sleep(duration)
     except KeyboardInterrupt:
         print("\n\nInterrupted by user.")
