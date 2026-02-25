@@ -472,14 +472,17 @@ class VoiceSession:
         elif event_type == "response.audio.done":
             logger.debug("Audio response stream complete")
 
-        # -- Transcript (print assistant words to console) ---------------
+        # -- Transcript (log assistant words as INFO) ---------------
         elif event_type == "response.audio_transcript.delta":
             fragment = event.get("delta", "")
             if fragment:
+                # We still print to stdout for real-time feedback, 
+                # but could also log to a file if needed.
                 print(fragment, end="", flush=True)
 
         elif event_type == "response.audio_transcript.done":
             print()  # newline after full transcript
+            logger.info("Assistant response complete")
 
         # -- VAD / turn detection ----------------------------------------
         elif event_type == "input_audio_buffer.speech_started":
@@ -507,6 +510,7 @@ class VoiceSession:
             transcript = event.get("transcript", "")
             if transcript:
                 print(f"\n[You] {transcript}\n")
+                logger.info("User transcript: %s", transcript)
 
         # -- Response lifecycle ------------------------------------------
         elif event_type == "response.created":
