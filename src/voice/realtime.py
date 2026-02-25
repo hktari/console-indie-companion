@@ -15,9 +15,12 @@ import base64
 import json
 import logging
 import os
+import sys
 import threading
 import time
-from typing import Optional
+import urllib.request
+import urllib.error
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -30,8 +33,11 @@ except (ImportError, OSError) as _sd_err:
 import websockets
 from dotenv import load_dotenv
 
-logger = logging.getLogger(__name__)
+load_dotenv()
+from dotenv import load_dotenv
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -42,7 +48,7 @@ CHUNK_DURATION_MS = 100  # ms per mic capture chunk
 CHUNK_SAMPLES = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)  # samples/chunk
 BYTES_PER_SAMPLE = 2  # PCM16 = 2 bytes per sample
 
-MODEL = "gpt-4o-realtime-preview"
+MODEL = "gpt-realtime"
 WS_URL = f"wss://api.openai.com/v1/realtime?model={MODEL}"
 
 DEFAULT_INSTRUCTIONS = (
@@ -153,15 +159,15 @@ class VoiceSession:
                 "session": {
                     "modalities": ["audio", "text"],
                     "instructions": self.system_instructions,
-                    "voice": "sage",
+                    "voice": "ballad",
                     "input_audio_format": "pcm16",
                     "output_audio_format": "pcm16",
                     "input_audio_transcription": {"model": "whisper-1"},
                     "turn_detection": {
                         "type": "server_vad",
-                        "threshold": 0.5,
+                        "threshold": 0.3,
                         "prefix_padding_ms": 300,
-                        "silence_duration_ms": 500,
+                        "silence_duration_ms": 500
                     },
                     "temperature": 0.7,
                 },
@@ -389,7 +395,7 @@ class VoiceSession:
                         "type": "server_vad",
                         "threshold": 0.5,
                         "prefix_padding_ms": 300,
-                        "silence_duration_ms": 500,
+                        "silence_duration_ms": 500
                     },
                     "temperature": 0.7,
                 },
@@ -416,6 +422,7 @@ class VoiceSession:
     async def _send_event(self, event: dict) -> None:
         """Serialise *event* to JSON and send it over the WebSocket."""
         if self._ws is None:
+            logger.warning("WebSocket not connected, cannot send event")
             return
         try:
             await self._ws.send(json.dumps(event))
@@ -439,6 +446,7 @@ class VoiceSession:
                     logger.warning("Non-JSON message received, skipping")
                     continue
                 event_type = event.get("type", "")
+                logger.debug("← %s", event_type)
                 self._handle_server_event(event_type, event)
         except websockets.ConnectionClosed as exc:
             logger.warning("WebSocket closed: %s", exc)
@@ -460,6 +468,7 @@ class VoiceSession:
         elif event_type == "response.audio.delta":
             delta = event.get("delta", "")
             if delta:
+                logger.debug("Received audio delta: %d bytes", len(delta))
                 pcm_bytes = base64.b64decode(delta)
                 self._enqueue_playback(pcm_bytes)
 
@@ -479,6 +488,8 @@ class VoiceSession:
         elif event_type == "input_audio_buffer.speech_started":
             logger.debug("User speech started – clearing playback buffer")
             self._clear_playback()
+            # If the user interrupts, we also want to stop the current response
+            # But the Realtime API handles this automatically with server_vad
 
         elif event_type == "input_audio_buffer.speech_stopped":
             logger.debug("User speech stopped")
@@ -544,27 +555,38 @@ class VoiceSession:
         loop = asyncio.get_running_loop()
         audio_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
 
-        def _mic_callback(
-            indata: np.ndarray, frames: int, time_info: object, status: object
-        ) -> None:
-            if status:
-                logger.warning("Mic status: %s", status)
-            # float32 [-1, 1] → int16 PCM
-            pcm16 = (indata[:, 0] * 32767).astype(np.int16).tobytes()
+        # PyAudio configuration
+        import pyaudio
+        p = pyaudio.PyAudio()
+        
+        def _mic_callback(in_data, frame_count, time_info, status_flags):
+            if status_flags:
+                logger.warning("Mic status: %s", status_flags)
+            
+            # Apply input gain (e.g. 100x) and clip to [-32768, 32767]
+            # Since PyAudio provides raw bytes, we'll convert to numpy array to amplify
+            audio_data = np.frombuffer(in_data, dtype=np.int16)
+            # Use float32 for calculations to avoid overflow during multiplication
+            amplified = np.clip(audio_data.astype(np.float32) * 100.0, -32768, 32767)
+            pcm16 = amplified.astype(np.int16).tobytes()
+            
             try:
                 loop.call_soon_threadsafe(audio_q.put_nowait, pcm16)
             except asyncio.QueueFull:
                 pass  # drop frame rather than block the audio thread
+            
+            return (None, pyaudio.paContinue)
 
         try:
-            self._input_stream = sd.InputStream(
-                samplerate=SAMPLE_RATE,
+            self._input_stream = p.open(
+                format=pyaudio.paInt16,
                 channels=CHANNELS,
-                dtype="float32",
-                blocksize=CHUNK_SAMPLES,
-                callback=_mic_callback,
+                rate=SAMPLE_RATE,
+                input=True,
+                frames_per_buffer=CHUNK_SAMPLES,
+                stream_callback=_mic_callback
             )
-            self._input_stream.start()
+            self._input_stream.start_stream()
             logger.info("Microphone capture started (24 kHz mono PCM16)")
 
             while self._connected:
@@ -586,7 +608,7 @@ class VoiceSession:
         finally:
             if self._input_stream is not None:
                 try:
-                    self._input_stream.stop()
+                    self._input_stream.stop_stream()
                     self._input_stream.close()
                 except Exception:
                     pass
@@ -621,6 +643,7 @@ class VoiceSession:
                     outdata.fill(0)
                     return
 
+            # logger.debug("Playing back %d bytes (%d remaining in buffer)", len(raw), len(self._playback_buf))
             samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32767.0
             outdata[:, 0] = samples[:frames]
 
@@ -667,8 +690,76 @@ class VoiceSession:
 # ---------------------------------------------------------------------------
 
 
+async def _check_api_quota() -> None:
+    """Perform a pre-flight check to ensure the OpenAI API key is valid and has quota."""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        logger.error("OPENAI_API_KEY environment variable is not set.")
+        sys.exit(1)
+        
+    logger.info("Performing pre-flight API check...")
+    try:
+        # We use a simple models list request to verify auth
+        # It's lightweight and fails if the key is invalid or quota is exceeded
+        import urllib.request
+        import json
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"}
+        )
+        with urllib.request.urlopen(req) as response:
+            if response.status == 200:
+                logger.info("API key is valid. Checking quota by initializing a minimal text completion...")
+        
+        # To truly check quota for a model, we try a minimal 1-token completion
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=json.dumps({
+                "model": "gpt-4o-mini", # Use a cheap model for the check
+                "messages": [{"role": "user", "content": "test"}],
+                "max_tokens": 1
+            }).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+        )
+        with urllib.request.urlopen(req) as response:
+            if response.status == 200:
+                logger.info("Pre-flight check passed! API quota is available.")
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        try:
+            error_json = json.loads(error_body)
+            error_msg = error_json.get("error", {}).get("message", e.reason)
+            error_code = error_json.get("error", {}).get("code", "unknown")
+            
+            logger.error(f"API Error [{error_code}]: {error_msg}")
+            
+            if error_code == "insufficient_quota":
+                print("\n❌ ERROR: Insufficient OpenAI API Quota")
+                print("Your API key is valid, but you have run out of credits or hit your billing limit.")
+                print("Please check your billing details at: https://platform.openai.com/account/billing")
+            elif e.code == 401:
+                print("\n❌ ERROR: Invalid OpenAI API Key")
+                print("Please ensure your OPENAI_API_KEY is correct.")
+            else:
+                print(f"\n❌ ERROR: API Check Failed ({e.code})")
+                print(f"Details: {error_msg}")
+        except Exception:
+            logger.error(f"HTTP Error {e.code}: {e.reason}")
+            print(f"\n❌ ERROR: Pre-flight check failed (HTTP {e.code})")
+            
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Failed to perform pre-flight check: {e}")
+        print(f"\n❌ ERROR: Could not connect to OpenAI API: {e}")
+        sys.exit(1)
+
 async def _run_session(duration: int, instructions: str) -> None:
     """Run an interactive voice session for *duration* seconds."""
+    await _check_api_quota()
+    
     session = VoiceSession(system_instructions=instructions)
 
     try:
