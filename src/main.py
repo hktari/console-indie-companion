@@ -327,6 +327,11 @@ def main() -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
+    # Suppress noisy library logs unless in DEBUG mode
+    if numeric_level > logging.DEBUG:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("google_genai").setLevel(logging.WARNING)
+
     # Environment
     load_dotenv()
     validate_env(need_voice=not args.no_voice)
