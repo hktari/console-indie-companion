@@ -1,5 +1,6 @@
 """VLM Scene Analysis module for Tunic game screenshots using Google Gemini."""
 
+import logging
 import json
 import os
 import re
@@ -12,6 +13,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
+logger = logging.getLogger(__name__)
 
 ANALYSIS_PROMPT = """\
 You are analyzing a screenshot from the video game TUNIC.
@@ -98,7 +100,7 @@ class SceneAnalyzer:
                 if "rate" in error_str or "429" in error_str or "quota" in error_str:
                     if attempt < max_retries - 1:
                         wait = 2 ** (attempt + 1)
-                        print(f"  Rate limited, retrying in {wait}s...")
+                        logger.warning("Rate limited, retrying in %ds...", wait)
                         time.sleep(wait)
                         continue
                 if "invalid" in error_str and "image" in error_str:
@@ -155,14 +157,14 @@ def run_single(image_path: str) -> None:
     """Analyze a single image and print results."""
     analyzer = SceneAnalyzer()
     result = analyzer.analyze_file(image_path)
-    print(json.dumps(result, indent=2))
+    logger.info("Analysis result: %s", json.dumps(result, indent=2))
 
 
 def run_batch(manifest_path: str, output_path: str) -> None:
     """Analyze all images in a manifest file and save results."""
     manifest_file = Path(manifest_path)
     if not manifest_file.exists():
-        print(f"Error: Manifest not found: {manifest_path}")
+        logger.error("Manifest not found: %s", manifest_path)
         return
 
     manifest = json.loads(manifest_file.read_text())
@@ -175,10 +177,10 @@ def run_batch(manifest_path: str, output_path: str) -> None:
     for i, entry in enumerate(manifest, 1):
         filename = entry["filename"]
         image_path = screenshots_dir / filename
-        print(f"[{i}/{total}] Analyzing {filename}...")
+        logger.info("[%d/%d] Analyzing %s...", i, total, filename)
 
         if not image_path.exists():
-            print(f"  WARNING: File not found, skipping: {image_path}")
+            logger.warning("File not found, skipping: %s", image_path)
             results.append({
                 "filename": filename,
                 "manifest": entry,
@@ -194,9 +196,9 @@ def run_batch(manifest_path: str, output_path: str) -> None:
         })
 
         if "error" not in analysis:
-            print(f"  -> location={analysis.get('location')}, activity={analysis.get('activity')}")
+            logger.info("  -> location=%s, activity=%s", analysis.get('location'), analysis.get('activity'))
         else:
-            print(f"  -> ERROR: {analysis.get('error')}")
+            logger.error("  -> ERROR: %s", analysis.get('error'))
 
         # Small delay to avoid rate limiting
         if i < total:
@@ -205,8 +207,8 @@ def run_batch(manifest_path: str, output_path: str) -> None:
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(results, indent=2))
-    print(f"\nResults saved to {output_path}")
-    print(f"Analyzed {len(results)} screenshots")
+    logger.info("Results saved to %s", output_path)
+    logger.info("Analyzed %d screenshots", len(results))
 
 
 def score_results(results: list[dict]) -> dict:
@@ -311,7 +313,24 @@ if __name__ == "__main__":
     parser.add_argument("--image", type=str, help="Path to a single image to analyze")
     parser.add_argument("--batch", type=str, help="Path to manifest.json for batch analysis")
     parser.add_argument("--output", type=str, default="results.json", help="Output path for batch results")
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Set the logging level (default: INFO)",
+    )
     args = parser.parse_args()
+
+    # Logging
+    numeric_level = getattr(logging, args.log_level.upper(), None)
+    if not isinstance(numeric_level, int):
+        numeric_level = logging.INFO
+
+    logging.basicConfig(
+        level=numeric_level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
     if args.image:
         run_single(args.image)
