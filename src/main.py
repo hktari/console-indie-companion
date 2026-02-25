@@ -96,6 +96,12 @@ def parse_args() -> argparse.Namespace:
         choices=["gemini-2.5-flash", "gemini-2.5-flash-lite"],
         help="Gemini model to use (default: gemini-2.5-flash). Use 'gemini-2.5-flash-lite' for lower cost.",
     )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Set the logging level (default: INFO)",
+    )
     return parser.parse_args()
 
 
@@ -311,9 +317,13 @@ def main() -> None:
     args = parse_args()
 
     # Logging
+    numeric_level = getattr(logging, args.log_level.upper(), None)
+    if not isinstance(numeric_level, int):
+        numeric_level = logging.INFO
+
     logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
+        level=numeric_level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 

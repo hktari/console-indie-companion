@@ -34,7 +34,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -52,7 +51,8 @@ DEFAULT_INSTRUCTIONS = (
     "You are a friendly and knowledgeable gaming companion for the game TUNIC. "
     "You've beaten the game and love helping other players. Be casual and conversational. "
     "When the player asks for help, give graduated hints - start vague, get more specific only if asked. "
-    "Keep responses concise - 1-2 sentences max since this is a voice conversation."
+    "Keep responses concise - 1-2 sentences max since this is a voice conversation. "
+    "Respond ONLY in English, regardless of the language the player uses."
 )
 
 
@@ -794,10 +794,21 @@ def main() -> None:
         default="",
         help="System instructions (default: TUNIC companion prompt)",
     )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Set the logging level (default: INFO)",
+    )
     args = parser.parse_args()
 
+    # Logging
+    numeric_level = getattr(logging, args.log_level.upper(), None)
+    if not isinstance(numeric_level, int):
+        numeric_level = logging.INFO
+
     logging.basicConfig(
-        level=logging.INFO,
+        level=numeric_level,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
