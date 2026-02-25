@@ -8,11 +8,14 @@ Usage:
     python -m src.rag.query "how to beat the garden knight"
 """
 
+import logging
 import sys
 from pathlib import Path
 
 import chromadb
 from chromadb.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 CHROMA_DIR = Path(__file__).parent.parent.parent / "data" / "chroma"
@@ -69,35 +72,41 @@ def query_tunic_knowledge(question: str, n_results: int = 5) -> list[str]:
 
 def main():
     """CLI for querying Tunic knowledge."""
+    # Setup basic logging for standalone execution
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    
     if len(sys.argv) < 2:
-        print("Usage: python -m src.rag.query <question>")
-        print('Example: python -m src.rag.query "how to beat the garden knight"')
+        logger.error("Usage: python -m src.rag.query <question>")
+        logger.error('Example: python -m src.rag.query "how to beat the garden knight"')
         sys.exit(1)
     
     question = " ".join(sys.argv[1:])
     
-    print("=" * 60)
-    print(f"Question: {question}")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("Question: %s", question)
+    logger.info("=" * 60)
     
     try:
         results = query_tunic_knowledge(question)
         
         if not results:
-            print("\nNo relevant results found.")
+            logger.info("No relevant results found.")
         else:
-            print(f"\nFound {len(results)} relevant passages:\n")
+            logger.info("Found %d relevant passages:", len(results))
             
             for i, result in enumerate(results, 1):
-                print(f"\n--- Result {i} ---")
-                print(result)
-                print()
+                logger.info("--- Result %d ---", i)
+                logger.info("\n%s\n", result)
         
     except Exception as e:
-        print(f"\n✗ Error: {e}")
+        logger.error("Error: %s", e)
         sys.exit(1)
     
-    print("=" * 60)
+    logger.info("=" * 60)
 
 
 if __name__ == "__main__":

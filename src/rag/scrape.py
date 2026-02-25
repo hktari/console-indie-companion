@@ -9,6 +9,7 @@ Usage:
     python -m src.rag.scrape
 """
 
+import logging
 import json
 import re
 import time
@@ -17,6 +18,8 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
+
+logger = logging.getLogger(__name__)
 
 
 # Configuration
@@ -96,7 +99,7 @@ def extract_page_content(soup: BeautifulSoup) -> list[dict]:
 
 def fetch_all_pages() -> list[str]:
     """Fetch all wiki page URLs from Special:AllPages."""
-    print("Fetching page list from Special:AllPages...")
+    logger.info("Fetching page list from Special:AllPages...")
     all_pages = []
     
     # Fandom wikis use Special:AllPages with pagination
@@ -132,7 +135,7 @@ def fetch_all_pages() -> list[str]:
                     all_pages.append(href)
         
     except Exception as e:
-        print(f"Error fetching page list: {e}")
+        logger.error("Error fetching page list: %s", e)
         # Fallback: use a seed list of important pages
         all_pages = [
             "/wiki/Tunic_Wiki",
@@ -147,7 +150,7 @@ def fetch_all_pages() -> list[str]:
     
     # Remove duplicates
     all_pages = list(set(all_pages))
-    print(f"Found {len(all_pages)} pages to scrape")
+    logger.info("Found %d pages to scrape", len(all_pages))
     
     return all_pages
 
@@ -157,7 +160,7 @@ def scrape_page(page_url: str) -> dict | None:
     full_url = urljoin(BASE_URL, page_url)
     page_title = page_url.replace("/wiki/", "")
     
-    print(f"Scraping: {page_title}")
+    logger.info("Scraping: %s", page_title)
     
     try:
         response = requests.get(full_url, timeout=10)
@@ -173,7 +176,7 @@ def scrape_page(page_url: str) -> dict | None:
         sections = extract_page_content(soup)
         
         if not sections:
-            print(f"  ⚠ No content found for {page_title}")
+            logger.warning("  ⚠ No content found for %s", page_title)
             return None
         
         return {
@@ -184,7 +187,7 @@ def scrape_page(page_url: str) -> dict | None:
         }
         
     except Exception as e:
-        print(f"  ✗ Error scraping {page_title}: {e}")
+        logger.error("  ✗ Error scraping %s: %s", page_title, e)
         return None
 
 
@@ -200,9 +203,16 @@ def save_page(page_data: dict):
 
 def main():
     """Main scraper function."""
-    print("=" * 60)
-    print("Tunic Wiki Scraper")
-    print("=" * 60)
+    # Setup basic logging for standalone execution
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    
+    logger.info("=" * 60)
+    logger.info("Tunic Wiki Scraper")
+    logger.info("=" * 60)
     
     # Ensure data directory exists
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -218,16 +228,16 @@ def main():
         if page_data:
             save_page(page_data)
             scraped_count += 1
-            print(f"  ✓ Saved [{scraped_count}/{len(pages)}]")
+            logger.info("  ✓ Saved [%d/%d]", scraped_count, len(pages))
         
         # Be respectful: delay between requests
         if i < len(pages):
             time.sleep(DELAY_SECONDS)
     
-    print("=" * 60)
-    print(f"Scraping complete! Scraped {scraped_count} pages.")
-    print(f"Data saved to: {DATA_DIR}")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("Scraping complete! Scraped %d pages.", scraped_count)
+    logger.info("Data saved to: %s", DATA_DIR)
+    logger.info("=" * 60)
 
 
 if __name__ == "__main__":

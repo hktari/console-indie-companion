@@ -9,11 +9,14 @@ Usage:
     python -m src.rag.index
 """
 
+import logging
 import json
 from pathlib import Path
 
 import chromadb
 from chromadb.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 DATA_DIR = Path(__file__).parent.parent.parent / "data" / "wiki"
@@ -116,7 +119,7 @@ def index_to_chromadb(chunks: list[str], metadatas: list[dict], ids: list[str]):
     
     try:
         client.delete_collection(name=COLLECTION_NAME)
-        print(f"Deleted existing collection: {COLLECTION_NAME}")
+        logger.info("Deleted existing collection: %s", COLLECTION_NAME)
     except:
         pass
     
@@ -140,36 +143,43 @@ def index_to_chromadb(chunks: list[str], metadatas: list[dict], ids: list[str]):
         )
         
         batch_num = (i // batch_size) + 1
-        print(f"  Indexed batch {batch_num}/{total_batches} ({len(batch_chunks)} chunks)")
+        logger.info("  Indexed batch %d/%d (%d chunks)", batch_num, total_batches, len(batch_chunks))
     
     return collection
 
 
 def main():
     """Main indexer function."""
-    print("=" * 60)
-    print("Tunic Wiki RAG Indexer")
-    print("=" * 60)
+    # Setup basic logging for standalone execution
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
     
-    print("\n1. Loading wiki pages...")
+    logger.info("=" * 60)
+    logger.info("Tunic Wiki RAG Indexer")
+    logger.info("=" * 60)
+    
+    logger.info("1. Loading wiki pages...")
     pages = load_wiki_pages()
-    print(f"   Loaded {len(pages)} pages")
+    logger.info("   Loaded %d pages", len(pages))
     
-    print("\n2. Chunking content...")
+    logger.info("2. Chunking content...")
     chunks, metadatas, ids = create_chunks_from_pages(pages)
-    print(f"   Created {len(chunks)} chunks")
+    logger.info("   Created %d chunks", len(chunks))
     
-    print("\n3. Indexing to ChromaDB...")
+    logger.info("3. Indexing to ChromaDB...")
     collection = index_to_chromadb(chunks, metadatas, ids)
-    print(f"   ✓ Indexed to collection: {COLLECTION_NAME}")
+    logger.info("   ✓ Indexed to collection: %s", COLLECTION_NAME)
     
-    print("\n" + "=" * 60)
-    print(f"Indexing complete!")
-    print(f"  Pages: {len(pages)}")
-    print(f"  Chunks: {len(chunks)}")
-    print(f"  Collection: {COLLECTION_NAME}")
-    print(f"  Database: {CHROMA_DIR}")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("Indexing complete!")
+    logger.info("  Pages: %d", len(pages))
+    logger.info("  Chunks: %d", len(chunks))
+    logger.info("  Collection: %s", COLLECTION_NAME)
+    logger.info("  Database: %s", CHROMA_DIR)
+    logger.info("=" * 60)
 
 
 if __name__ == "__main__":

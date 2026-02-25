@@ -147,40 +147,43 @@ class CostTracker:
         }
 
     def print_summary(self) -> None:
-        """Print a formatted cost summary to console."""
+        """Log a formatted cost summary."""
         cost_data = self.get_session_cost()
         
-        print("\n" + "=" * 70)
-        print("COST SUMMARY")
-        print("=" * 70)
+        summary_lines = []
+        summary_lines.append("\n" + "=" * 70)
+        summary_lines.append("COST SUMMARY")
+        summary_lines.append("=" * 70)
         
         if cost_data["call_count"] == 0:
-            print("No API calls logged.")
-            print("=" * 70 + "\n")
+            summary_lines.append("No API calls logged.")
+            summary_lines.append("=" * 70 + "\n")
+            logger.info("\n".join(summary_lines))
             return
 
-        print(f"Total API calls: {cost_data['call_count']}")
-        print(f"Total estimated cost: ${cost_data['total_cost']:.4f}")
-        print()
+        summary_lines.append(f"Total API calls: {cost_data['call_count']}")
+        summary_lines.append(f"Total estimated cost: ${cost_data['total_cost']:.4f}")
+        summary_lines.append("")
 
         for service, service_data in cost_data["by_service"].items():
-            print(f"  {service.upper()}")
-            print(f"    Calls: {service_data['calls']}")
-            print(f"    Cost: ${service_data['cost']:.4f}")
+            summary_lines.append(f"  {service.upper()}")
+            summary_lines.append(f"    Calls: {service_data['calls']}")
+            summary_lines.append(f"    Cost: ${service_data['cost']:.4f}")
             
             for model, model_detail in service_data["details"].items():
-                print(f"      {model}")
-                print(f"        Calls: {model_detail['calls']}")
-                print(f"        Cost: ${model_detail['cost']:.4f}")
+                summary_lines.append(f"      {model}")
+                summary_lines.append(f"        Calls: {model_detail['calls']}")
+                summary_lines.append(f"        Cost: ${model_detail['cost']:.4f}")
                 
                 if model_detail["input_tokens"] > 0 or model_detail["output_tokens"] > 0:
-                    print(f"        Tokens: {model_detail['input_tokens']} in, {model_detail['output_tokens']} out")
+                    summary_lines.append(f"        Tokens: {model_detail['input_tokens']} in, {model_detail['output_tokens']} out")
                 
                 if model_detail["duration_seconds"] > 0:
-                    print(f"        Duration: {model_detail['duration_seconds']:.1f}s")
-            print()
+                    summary_lines.append(f"        Duration: {model_detail['duration_seconds']:.1f}s")
+            summary_lines.append("")
 
-        print("=" * 70 + "\n")
+        summary_lines.append("=" * 70 + "\n")
+        logger.info("\n".join(summary_lines))
 
     def _estimate_call_cost(self, call: APICall) -> float:
         """Estimate the cost of a single API call.
