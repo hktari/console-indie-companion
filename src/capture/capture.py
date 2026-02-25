@@ -92,7 +92,7 @@ class CaptureService:
                             if xd_result.returncode == 0 and xd_result.stdout.strip():
                                 ids = xd_result.stdout.strip().split("\n")
                                 self.window_id = ids[0] # Usually the first one for PID search
-                                logger.info("Found window ID %s via PID %s", self.window_id, pid)
+                                logger.debug("Found window ID %s via PID %s", self.window_id, pid)
                                 if self.refresh_geometry():
                                     return True
         except Exception as e:
@@ -102,7 +102,7 @@ class CaptureService:
             logger.error("No window_id, window_name, and PID discovery failed")
             return False
 
-        logger.info("Searching for window with name: %s", self.window_name)
+        logger.debug("Searching for window with name: %s", self.window_name)
         try:
             # Try searching by name exactly first
             result = subprocess.run(
@@ -115,7 +115,7 @@ class CaptureService:
                 # Take the last one, as it's often the actual UI window vs hidden ones
                 ids = result.stdout.strip().split("\n")
                 self.window_id = ids[-1]
-                logger.info("Found window ID: %s", self.window_id)
+                logger.debug("Found window ID: %s", self.window_id)
                 return self.refresh_geometry()
 
             # Fallback: search by class
@@ -128,7 +128,7 @@ class CaptureService:
             if result.returncode == 0 and result.stdout.strip():
                 ids = result.stdout.strip().split("\n")
                 self.window_id = ids[-1]
-                logger.info("Found window ID by class: %s", self.window_id)
+                logger.debug("Found window ID by class: %s", self.window_id)
                 return self.refresh_geometry()
 
         except Exception as e:
@@ -301,7 +301,7 @@ class CaptureService:
             daemon=True,
         )
         self._capture_thread.start()
-        logger.info(
+        logger.debug(
             "Started periodic capture for window %s every %.1fs",
             self.window_id,
             self.interval,
@@ -317,7 +317,7 @@ class CaptureService:
         if self._capture_thread.is_alive():
             logger.warning("Capture thread did not stop cleanly")
         else:
-            logger.info("Capture thread stopped")
+            logger.debug("Capture thread stopped")
         self._capture_thread = None
 
     def _capture_loop(self) -> None:

@@ -258,7 +258,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
                 continue
 
             analysis_count += 1
-            logger.info(
+            logger.debug(
                 "[#%d] Scene: %s | Location: %s | Activity: %s",
                 analysis_count,
                 scene.get("description", "unknown")[:80],
@@ -277,7 +277,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
             if voice and voice.is_connected():
                 try:
                     await context_mgr.flush_to_voice(voice)
-                    logger.info("Context injected into voice session")
+                    logger.debug("Context injected into voice session")
                 except Exception:
                     logger.exception("Failed to inject context into voice session")
             elif voice and not voice.is_connected():

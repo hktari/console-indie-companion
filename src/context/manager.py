@@ -160,7 +160,7 @@ class ContextManager:
         with self._lock:
             self._unflushed_count = 0
 
-        logger.info("Flushed context to voice session (%d chars)", len(context))
+        logger.debug("Flushed context to voice session (%d chars)", len(context))
         return True
 
     # ------------------------------------------------------------------

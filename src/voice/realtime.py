@@ -224,7 +224,7 @@ class VoiceSession:
             logger.warning("Cannot inject context – not connected")
             return
 
-        logger.info("Injecting context (%d chars): %.100s…", len(context_text), context_text)
+        logger.debug("Injecting context (%d chars): %.100s…", len(context_text), context_text)
 
         await self._send_event(
             {
@@ -459,7 +459,7 @@ class VoiceSession:
 
         # -- Session lifecycle -------------------------------------------
         if event_type == "session.updated":
-            logger.info("Session configuration updated")
+            logger.debug("Session configuration updated")
 
         # -- Audio output ------------------------------------------------
         elif event_type == "response.audio.delta":
@@ -515,7 +515,7 @@ class VoiceSession:
         elif event_type == "response.done":
             usage = event.get("response", {}).get("usage", {})
             if usage:
-                logger.info(
+                logger.debug(
                     "Response done – tokens in=%s out=%s",
                     usage.get("input_tokens", "?"),
                     usage.get("output_tokens", "?"),
@@ -589,7 +589,7 @@ class VoiceSession:
                 stream_callback=_mic_callback
             )
             self._input_stream.start_stream()
-            logger.info("Microphone capture started (24 kHz mono PCM16)")
+            logger.debug("Microphone capture started (24 kHz mono PCM16)")
 
             while self._connected:
                 try:
@@ -658,7 +658,7 @@ class VoiceSession:
                 callback=_speaker_callback,
             )
             self._output_stream.start()
-            logger.info("Audio output started (24 kHz mono)")
+            logger.debug("Audio output started (24 kHz mono)")
         except OSError as exc:
             logger.warning("Cannot open audio output – continuing without: %s", exc)
 
