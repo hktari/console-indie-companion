@@ -27,6 +27,7 @@ dependencies = [
     "pillow>=12.1.1",
     "pyaudio>=0.2.14",
     "langchain-text-splitters>=1.1.1",
+    "pynput>=1.7.6",
 ]
 
 [project.optional-dependencies]
