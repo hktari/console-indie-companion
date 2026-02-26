@@ -37,6 +37,7 @@ from src.prompts.tunic_companion import (
 )
 
 from src.context.manager import ContextManager
+from src.context.synthesizer import ContextSynthesizer
 
 # RAG may not be indexed yet — import but handle failures gracefully.
 try:
@@ -176,6 +177,98 @@ def setup_key_listener(voice_session: VoiceSession, loop: asyncio.AbstractEventL
 # ---------------------------------------------------------------------------
 
 
+async def context_synthesis_loop(
+    synthesizer: ContextSynthesizer,
+    context_mgr: ContextManager,
+    interval_seconds: int = 5,
+    num_scenes_for_synthesis: int = 10,
+):
+    """Periodically synthesizes a narrative from recent context."""
+    logger.info(
+        f"Starting context synthesis loop (running every {interval_seconds}s)"
+    )
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            
+            with context_mgr._lock: # type: ignore
+                scenes = list(context_mgr._scenes)[-num_scenes_for_synthesis:]
+            
+            if not scenes:
+                continue
+
+            rag_context = ""
+            if query_tunic_knowledge:
+                rag_context = await asyncio.to_thread(context_mgr.get_rag_context, scenes[-1])
+
+            narrative = await asyncio.to_thread(
+                synthesizer.synthesize, scenes, rag_context
+            )
+
+            if narrative:
+                context_mgr.set_current_narrative(narrative)
+
+        except asyncio.CancelledError:
+            logger.info("Context synthesis loop cancelled.")
+            break
+        except Exception:
+            logger.exception("Error in context synthesis loop.")
+
+
+async def main_pipeline(
+    args: argparse.Namespace,
+    capture: Union[ReplayCapture, CaptureService],
+    vlm: SceneAnalyzer,
+    context_mgr: ContextManager,
+    cost_tracker: CostTracker,
+    voice: Optional[VoiceSession] = None,
+) -> None:
+    """The main VLM analysis loop."""
+    logger.info("Main pipeline running. Press Ctrl+C to stop.")
+    start_time = asyncio.get_event_loop().time()
+    last_frame: Optional[bytes] = None
+    analysis_count = 0
+
+    while True: # Loop is broken by run_pipeline's signal handler
+        if args.duration > 0:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed >= args.duration:
+                logger.info("Duration limit reached (%.0fs). Stopping.", elapsed)
+                break
+
+        frame = capture.get_latest_frame()
+        if frame is None:
+            await asyncio.sleep(0.5)
+            continue
+        if frame == last_frame:
+            await asyncio.sleep(0.5)
+            continue
+        last_frame = frame
+
+        try:
+            scene = await asyncio.to_thread(vlm.analyze_screenshot, frame, "image/jpeg")
+        except Exception:
+            logger.exception("VLM analysis failed — skipping frame")
+            continue
+
+        if not scene or not isinstance(scene, dict) or "error" in scene:
+            logger.warning("VLM returned error/invalid: %s", scene.get("error") if isinstance(scene, dict) else "empty")
+            continue
+
+        analysis_count += 1
+        analysis_logger.info(
+            "[#%d] Scene: %s | Location: %s | Activity: %s | Health: %s",
+            analysis_count,
+            (scene.get("description") or "unknown")[:80],
+            scene.get("location", "?"),
+            scene.get("activity", "?"),
+            scene.get("health_status", "?"),
+        )
+
+        context_mgr.update_scene(scene)
+        await asyncio.sleep(args.interval)
+
+
 async def run_pipeline(args: argparse.Namespace) -> None:
     """Run the capture → VLM → context → voice pipeline."""
     running = True
@@ -217,6 +310,9 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     context_mgr = ContextManager()
     logger.info("Context manager loaded")
 
+    synthesizer = ContextSynthesizer()
+    logger.info("Context synthesizer loaded")
+
     voice: Optional[VoiceSession] = None
     if not args.no_voice:
         voice = VoiceSession(
@@ -249,103 +345,35 @@ async def run_pipeline(args: argparse.Namespace) -> None:
             logger.exception("Failed to start voice session — continuing without voice")
             voice = None
 
-    # -- 4. Main loop ---------------------------------------------------
-    logger.info("Pipeline running. Press Ctrl+C to stop.")
-    start_time = asyncio.get_event_loop().time()
-    last_frame: Optional[bytes] = None
-    analysis_count = 0
-    previous_scene: Optional[dict] = None
-
+    # -- 4. Start main pipeline & synthesis loop ------------------------
+    main_task = None
+    synthesis_task = None
     try:
+        main_task = asyncio.create_task(
+            main_pipeline(args, capture, vlm, context_mgr, cost_tracker, voice)
+        )
+        synthesis_task = asyncio.create_task(
+            context_synthesis_loop(synthesizer, context_mgr)
+        )
+
+        # Primary loop to keep running until a signal is received
         while running:
-            # Check duration limit
-            if args.duration > 0:
-                elapsed = asyncio.get_event_loop().time() - start_time
-                if elapsed >= args.duration:
-                    logger.info("Duration limit reached (%.0fs). Stopping.", elapsed)
-                    break
-
-            # Get latest frame from capture service
-            frame = capture.get_latest_frame()
-
-            if frame is None:
-                logger.debug("No frame available yet, waiting...")
-                await asyncio.sleep(1)
-                continue
-
-            if frame == last_frame:
-                # Same frame — no new capture yet, skip VLM call.
-                await asyncio.sleep(1)
-                continue
-
-            # New frame detected
-            last_frame = frame
-
-            # Analyse with VLM (synchronous call → run in thread)
-            try:
-                scene = await asyncio.to_thread(
-                    vlm.analyze_screenshot, frame, "image/jpeg"
-                )
-            except Exception:
-                logger.exception("VLM analysis failed — skipping frame")
-                await asyncio.sleep(1)
-                continue
-
-            if not scene or not isinstance(scene, dict) or "error" in scene:
-                logger.warning("VLM returned error/invalid: %s", scene.get("error") if isinstance(scene, dict) else "empty or not dict")
-                await asyncio.sleep(1)
-                continue
-
-            analysis_count += 1
-            analysis_logger.info(
-                "[#%d] Scene: %s | Location: %s | Activity: %s | Health: %s",
-                analysis_count,
-                (scene.get("description") or "unknown")[:80],
-                scene.get("location", "?"),
-                scene.get("activity", "?"),
-                scene.get("health_status", "?"),
-            )
-
-            # Update context manager with the new scene first
-            context_mgr.update_scene(scene)
-
-            # --- CRITICAL EVENT DETECTION (Diffing) ---
-            if voice and voice.is_connected():
-                current_activity = scene.get("activity")
-                current_health = scene.get("health_status")
-                
-                prev_activity = previous_scene.get("activity") if previous_scene else None
-                prev_health = previous_scene.get("health_status") if previous_scene else None
-
-                # 1. Death Event
-                if current_activity == "died" and prev_activity != "died":
-                    logger.info("CRITICAL EVENT: Player died detected! Triggering proactive response.")
-                    # Inject the context of the death scene, then trigger a response
-                    await context_mgr.flush_latest_to_voice(voice)
-                    await voice.trigger_response(
-                        "SYSTEM EVENT: The player just died! Give a very brief, empathetic or encouraging response (under 10 words). Don't give a solution yet."
-                    )
-                
-                # 2. Low Health Event
-                elif current_health in ["low", "critical"] and prev_health not in ["low", "critical"]:
-                    logger.info("CRITICAL EVENT: Low health detected! Triggering proactive response.")
-                    # Inject the context of the low health scene, then trigger a response
-                    await context_mgr.flush_latest_to_voice(voice)
-                    await voice.trigger_response(
-                        "SYSTEM EVENT: The player's health is critically low! Give a very brief, urgent warning (under 10 words)!"
-                    )
-                    
-            previous_scene = scene
-            # ------------------------------------------
-
-            # Wait before checking for next frame
             await asyncio.sleep(1)
 
     except asyncio.CancelledError:
-        logger.info("Pipeline cancelled")
+        logger.info("Main run_pipeline task cancelled.")
+    finally:
+        logger.info("Shutting down tasks...")
+        if main_task:
+            main_task.cancel()
+        if synthesis_task:
+            synthesis_task.cancel()
+        
+        tasks = [t for t in [main_task, synthesis_task] if t is not None]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
 
     # -- 5. Cleanup -----------------------------------------------------
-    logger.info("Shutting down... (%d scenes analysed)", analysis_count)
     capture.stop()
     if voice:
         try:

@@ -286,7 +286,7 @@ class VoiceSession:
             logger.warning("Cannot inject context – not connected")
             return
 
-        logger.debug("Injecting context (%d chars): %.100s…", len(context_text), context_text)
+        logger.info("Injecting context (%d chars): %.100s…", len(context_text), context_text)
 
         await self._send_event(
             {
@@ -675,19 +675,13 @@ class VoiceSession:
                 logger.info("User transcript: %s", transcript)
 
                 if self._context_manager:
-                    logger.debug("User spoke, preparing to inject recent context...")
-                    num_context = self._session_config.get("num_scenes_for_context", 5)
-                    num_rag = self._session_config.get("num_scenes_for_rag", 3)
-                    
-                    context_text = self._context_manager.get_recent_context(
-                        num_scenes_context=num_context,
-                        num_scenes_rag=num_rag,
-                    )
+                    logger.debug("User spoke, injecting latest synthesized narrative...")
+                    context_text = self._context_manager.get_current_narrative()
                     
                     if context_text:
                         # Schedule the injection to run on the event loop
                         asyncio.create_task(self.inject_context(context_text))
-                        logger.info("Scheduled context injection (%d chars) based on user prompt.", len(context_text))
+                        logger.info("Scheduled narrative injection (%d chars).", len(context_text))
 
         # -- Response lifecycle ------------------------------------------
         elif event_type == "response.created":
