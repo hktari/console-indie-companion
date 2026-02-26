@@ -260,8 +260,8 @@ async def run_pipeline(args: argparse.Namespace) -> None:
                 await asyncio.sleep(1)
                 continue
 
-            if not scene or "error" in scene:
-                logger.warning("VLM returned error: %s", scene.get("error") if scene else "empty")
+            if not scene or not isinstance(scene, dict) or "error" in scene:
+                logger.warning("VLM returned error/invalid: %s", scene.get("error") if isinstance(scene, dict) else "empty or not dict")
                 await asyncio.sleep(1)
                 continue
 

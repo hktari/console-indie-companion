@@ -117,6 +117,9 @@ class VoiceSession:
         
         # Audio cost tracking
         self._audio_session_start: Optional[float] = None
+        
+        # Audio playback state
+        self._audio_stream_active: bool = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -170,7 +173,7 @@ class VoiceSession:
                     "input_audio_transcription": {"model": "whisper-1"},
                     "turn_detection": {
                         "type": "server_vad",
-                        "threshold": 0.3,
+                        "threshold": 0.5,
                         "prefix_padding_ms": 300,
                         "silence_duration_ms": 500
                     },
@@ -534,9 +537,11 @@ class VoiceSession:
                 logger.debug("Received audio delta: %d bytes", len(delta))
                 pcm_bytes = base64.b64decode(delta)
                 self._enqueue_playback(pcm_bytes)
+                self._audio_stream_active = True
 
         elif event_type == "response.audio.done":
             logger.debug("Audio response stream complete")
+            self._audio_stream_active = False
 
         # -- Transcript (log assistant words as INFO) ---------------
         elif event_type == "response.audio_transcript.delta":
@@ -706,6 +711,10 @@ class VoiceSession:
             return (None, pyaudio.paContinue)
 
         try:
+            # Find default input device name
+            device_info = p.get_default_input_device_info()
+            device_name = device_info.get("name", "Unknown Device")
+            
             self._input_stream = p.open(
                 format=pyaudio.paInt16,
                 channels=CHANNELS,
@@ -715,7 +724,7 @@ class VoiceSession:
                 stream_callback=_mic_callback
             )
             self._input_stream.start_stream()
-            logger.debug("Microphone capture started (24 kHz mono PCM16)")
+            logger.info("Microphone capture started using: %s (24 kHz mono PCM16)", device_name)
 
             while self._connected:
                 try:
@@ -752,22 +761,44 @@ class VoiceSession:
             logger.warning("sounddevice unavailable – audio output disabled")
             return
 
+        play_state = {"buffering": True}
+
         def _speaker_callback(
             outdata: np.ndarray, frames: int, time_info: object, status: object
         ) -> None:
             if status:
-                logger.warning("Speaker status: %s", status)
+                # Ignore expected underflow warnings
+                if hasattr(status, 'output_underflow') and getattr(status, 'output_underflow', False):
+                    pass
+                elif "output underflow" in str(status).lower():
+                    pass
+                else:
+                    logger.warning("Speaker status: %s", status)
 
             need = frames * BYTES_PER_SAMPLE
             with self._playback_lock:
                 available = len(self._playback_buf)
+                
+                if play_state["buffering"]:
+                    # Wait for ~200ms of audio or if stream ended with less data
+                    if available >= need * 2 or (available > 0 and not self._audio_stream_active):
+                        play_state["buffering"] = False
+                    else:
+                        outdata.fill(0)
+                        return
+
                 if available >= need:
                     raw = bytes(self._playback_buf[:need])
                     del self._playback_buf[:need]
-                elif available > 0:
+                elif available > 0 and not self._audio_stream_active:
+                    # Stream ended, flush the remaining data
                     raw = bytes(self._playback_buf) + b"\x00" * (need - available)
                     self._playback_buf.clear()
+                    play_state["buffering"] = True
                 else:
+                    # Stream active but not enough data -> network jitter.
+                    # Output silence and go back to buffering to rebuild buffer.
+                    play_state["buffering"] = True
                     outdata.fill(0)
                     return
 
@@ -776,6 +807,9 @@ class VoiceSession:
             outdata[:, 0] = samples[:frames]
 
         try:
+            device_info = sd.query_devices(kind='output')
+            device_name = device_info.get("name", "Unknown Device") if isinstance(device_info, dict) else "Unknown Device"
+
             self._output_stream = sd.OutputStream(
                 samplerate=SAMPLE_RATE,
                 channels=CHANNELS,
@@ -784,7 +818,7 @@ class VoiceSession:
                 callback=_speaker_callback,
             )
             self._output_stream.start()
-            logger.debug("Audio output started (24 kHz mono)")
+            logger.info("Audio output started using: %s (24 kHz mono)", device_name)
         except OSError as exc:
             logger.warning("Cannot open audio output – continuing without: %s", exc)
 

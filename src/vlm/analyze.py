@@ -149,8 +149,10 @@ class SceneAnalyzer:
         image_data = path.read_bytes()
         return self.analyze_screenshot(image_data, mime_type=mime_type)
 
-    def _parse_response(self, text: str) -> dict:
+    def _parse_response(self, text: str | None) -> dict:
         """Parse JSON from model response, handling markdown fences."""
+        if not text:
+            return {"error": "Empty response from model"}
         cleaned = text.strip()
         # Strip markdown code fences if present
         cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
@@ -158,13 +160,22 @@ class SceneAnalyzer:
         cleaned = cleaned.strip()
 
         try:
-            return json.loads(cleaned)
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, list):
+                if len(parsed) > 0 and isinstance(parsed[0], dict):
+                    return parsed[0]
+                return {"error": "Model returned a list instead of a dict", "raw_response": text[:500]}
+            if not isinstance(parsed, dict):
+                return {"error": f"Model returned {type(parsed).__name__} instead of a dict", "raw_response": text[:500]}
+            return parsed
         except json.JSONDecodeError:
             # Last resort: find first { ... } block
             match = re.search(r"\{.*\}", cleaned, re.DOTALL)
             if match:
                 try:
-                    return json.loads(match.group())
+                    parsed = json.loads(match.group())
+                    if isinstance(parsed, dict):
+                        return parsed
                 except json.JSONDecodeError:
                     pass
             return {
