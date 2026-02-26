@@ -18,25 +18,18 @@ from src.utils.logging_config import setup_logging
 logger = logging.getLogger(__name__)
 
 ANALYSIS_PROMPT = """\
-You are analyzing a screenshot from the video game TUNIC.
+Analyze this screenshot from the game Tunic and return a JSON object with exactly these fields.
+If you are not sure about a specific field, return null for that field.
 
-TUNIC is an isometric action-adventure game where the player controls a small fox protagonist \
-exploring a mysterious world filled with ruins, forests, caverns, and dangerous enemies. \
-The game features souls-like combat, environmental puzzles, and a unique in-game manual \
-written in a fictional language. Text visible in screenshots may be in this fictional \
-language and is intentionally unreadable — that is normal.
+- "location": Where in the game world this appears to be. Must be one of: "Beneath the Eastern Vault", "Cathedral", "Dark Tomb", "East Forest", "Eastern Vault", "Frog's Domain", "Great Library", "Mountain Door", "Overworld", "Quarry", "Rooted Ziggurat", "Ruined Atoll", "Shop", "Swamp", "The Far Shore", "Under the Well", "West Garden", or null.
+- "activity": What the player is doing. Must be one of: "exploring", "fighting", "solving puzzle", "in menu", "viewing map", "in dialogue", "shopping", "praying", "died", or null.
+- "enemies": A list of visible enemies. Choose from: "Admin", "Autobolt", "Baby Slorm", "Blob", "Boss Scavenger", "Chompignom", "Crabbit", "Crabbo", "Custodian", "Disquiet Being", "Envoy", "Fairy", "Fleemer", "Fossil of Self", "Frog", "Garden Knight", "Guard Captain", "Gunslinger", "Hedgehog", "Husher", "Lost Echo", "Oblivion Seeker", "Phrend", "Plover", "Rudeling", "Sappharach", "Scavenger", "Siege Engine", "Silver Knight", "Slorm", "Spyrite", "Tentacle", "The Heir", "The Librarian", "Voidling", "none", or null.
+- "health_status": Player health if visible. Choose from: "full", "low", "critical", "not visible", or null.
+- "ui_elements": List of visible UI elements. Choose from: "health bar", "stamina bar", "magic bar", "potion flasks", "inventory", "map", "manual page", "dialogue box", "quick items", "boss health bar", or null.
+- "notable_items": A list of notable items, NPCs, or interactive elements visible. Choose from general categories like: "Bits", "Cards", "Equipment", "Fairy Souls", "Gear", "Instruction Booklet Sheets", "Keys", "Offerings", "Secret Treasures", "Single Use Items", "Hero's Grave", "Fox Spirit", "Save Shrine/Statue", "Golden Path door", or null.
+- "description": A 1-2 sentence natural language description of the scene.
 
-Analyze this screenshot and return a JSON object with exactly these fields:
-
-- "location": Where in the game world this appears to be (e.g., "Overworld", "East Forest", "West Garden", "Ruins", "Cavern", "Boss Arena", "Menu", "Shop")
-- "activity": What the player is doing (e.g., "exploring", "fighting", "solving puzzle", "in menu", "viewing map", "in dialogue", "shopping", "died")
-- "enemies": A list of visible enemies, or "none" if no enemies are visible
-- "health_status": Player health if visible (e.g., "full", "low", "critical", "not visible")
-- "ui_elements": List of visible UI elements (e.g., "health bar", "stamina bar", "inventory", "map", "manual page", "dialogue box")
-- "notable_items": Any notable items, NPCs, or interactive elements visible
-- "description": A 1-2 sentence natural language description of the scene
-
-Respond ONLY with valid JSON. No markdown fences, no explanation, no extra text.\
+Return ONLY the raw JSON object, without any markdown formatting, code blocks, or explanations.
 """
 
 
