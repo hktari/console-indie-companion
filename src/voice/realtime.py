@@ -12,6 +12,7 @@ Usage:
 import argparse
 import asyncio
 import base64
+import importlib
 import json
 import logging
 import os
@@ -31,6 +32,7 @@ except (ImportError, OSError) as _sd_err:
     _sd_import_error = _sd_err
 
 import websockets
+from src.prompts.tunic_companion import SYSTEM_INSTRUCTIONS
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -95,15 +97,15 @@ class VoiceSession:
             )
 
         self.system_instructions = system_instructions
-        self.config_path = "session_config.json"
-        self.prompt_path = "prompt.txt"
+        self.config_path = os.path.join(os.path.dirname(__file__), "session_config.json")
         self._session_config = {}
 
         # Load initial config
         self._load_config()
 
         if not self.system_instructions:
-            self._load_prompt()
+            self.system_instructions = SYSTEM_INSTRUCTIONS
+            logger.debug("Loaded default system instructions from tunic_companion.py")
 
         self._cost_tracker = cost_tracker
 
@@ -296,12 +298,47 @@ class VoiceSession:
         # Check if rotation is needed
         await self._check_rotation()
 
+    async def trigger_response(self, prompt: str) -> None:
+        """Force the API to generate a proactive response based on an urgent prompt.
+
+        Args:
+            prompt: The urgent system message to inject before forcing a response.
+        """
+        if not self._connected:
+            logger.warning("Cannot trigger response – not connected")
+            return
+
+        logger.info("Triggering proactive response: %s", prompt)
+
+        # 1. Optionally cancel any ongoing response to interrupt
+        await self._send_event({"type": "response.cancel"})
+
+        # 2. Inject the urgent system message
+        await self._send_event(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": prompt,
+                        }
+                    ],
+                },
+            }
+        )
+
+        # 3. Force the model to respond immediately
+        await self._send_event({"type": "response.create"})
+
     async def reload_config(self) -> None:
         """Hot-reload configuration from files and send a session.update event."""
         logger.info("Reloading configuration...")
         self._load_config()
         self._load_prompt()
-
+    
         update_payload = self._session_config.copy()
         update_payload["instructions"] = self.system_instructions
 
@@ -324,12 +361,14 @@ class VoiceSession:
 
     def _load_prompt(self) -> None:
         """Load system instructions from the prompt text file."""
+        # Reload the prompt module to get updated SYSTEM_INSTRUCTIONS
         try:
-            with open(self.prompt_path, "r") as f:
-                self.system_instructions = f.read()
-                logger.debug("Loaded prompt from %s", self.prompt_path)
-        except FileNotFoundError as e:
-            logger.error("Could not load %s: %s", self.prompt_path, e)
+            import src.prompts.tunic_companion as tunic_prompts
+            importlib.reload(tunic_prompts)
+            self.system_instructions = tunic_prompts.SYSTEM_INSTRUCTIONS
+            logger.debug("Reloaded SYSTEM_INSTRUCTIONS from tunic_companion.py")
+        except Exception as e:
+            logger.error("Failed to reload tunic_companion.py: %s", e)
 
     def is_connected(self) -> bool:
         """Return *True* if the WebSocket connection is alive."""

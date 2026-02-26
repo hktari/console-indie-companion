@@ -251,6 +251,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     start_time = asyncio.get_event_loop().time()
     last_frame: Optional[bytes] = None
     analysis_count = 0
+    previous_scene: Optional[dict] = None
 
     try:
         while running:
@@ -294,12 +295,38 @@ async def run_pipeline(args: argparse.Namespace) -> None:
 
             analysis_count += 1
             logger.debug(
-                "[#%d] Scene: %s | Location: %s | Activity: %s",
+                "[#%d] Scene: %s | Location: %s | Activity: %s | Health: %s",
                 analysis_count,
                 scene.get("description", "unknown")[:80],
                 scene.get("location", "?"),
                 scene.get("activity", "?"),
+                scene.get("health_status", "?"),
             )
+
+            # --- CRITICAL EVENT DETECTION (Diffing) ---
+            if voice and voice.is_connected():
+                current_activity = scene.get("activity")
+                current_health = scene.get("health_status")
+                
+                prev_activity = previous_scene.get("activity") if previous_scene else None
+                prev_health = previous_scene.get("health_status") if previous_scene else None
+
+                # 1. Death Event
+                if current_activity == "died" and prev_activity != "died":
+                    logger.info("CRITICAL EVENT: Player died detected! Triggering proactive response.")
+                    await voice.trigger_response(
+                        "SYSTEM EVENT: The player just died! Give a very brief, empathetic or encouraging response (under 10 words). Don't give a solution yet."
+                    )
+                
+                # 2. Low Health Event
+                elif current_health in ["low", "critical"] and prev_health not in ["low", "critical"]:
+                    logger.info("CRITICAL EVENT: Low health detected! Triggering proactive response.")
+                    await voice.trigger_response(
+                        "SYSTEM EVENT: The player's health is critically low! Give a very brief, urgent warning (under 10 words)!"
+                    )
+                    
+            previous_scene = scene
+            # ------------------------------------------
 
             # Fetch RAG context and attach to scene
             rag_context = await asyncio.to_thread(fetch_rag_context, scene)
