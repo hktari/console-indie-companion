@@ -15,6 +15,8 @@ from pathlib import Path
 import chromadb
 from chromadb.config import Settings
 
+from src.utils.logging_config import setup_logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -73,11 +75,7 @@ def query_tunic_knowledge(question: str, n_results: int = 5) -> list[str]:
 def main():
     """CLI for querying Tunic knowledge."""
     # Setup basic logging for standalone execution
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    setup_logging("INFO")
     
     if len(sys.argv) < 2:
         logger.error("Usage: python -m src.rag.query <question>")

@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
+from src.utils.logging_config import setup_logging
+
 logger = logging.getLogger(__name__)
 
 ANALYSIS_PROMPT = """\
@@ -340,15 +342,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Logging
-    numeric_level = getattr(logging, args.log_level.upper(), None)
-    if not isinstance(numeric_level, int):
-        numeric_level = logging.INFO
-
-    logging.basicConfig(
-        level=numeric_level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    setup_logging(args.log_level)
 
     if args.image:
         run_single(args.image)

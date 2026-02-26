@@ -18,6 +18,8 @@ from typing import Optional
 import mss
 from PIL import Image
 
+from src.utils.logging_config import setup_logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -374,10 +376,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    setup_logging("INFO")
 
     os.makedirs(args.output, exist_ok=True)
 

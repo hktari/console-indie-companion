@@ -19,6 +19,8 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from src.utils.logging_config import setup_logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -204,11 +206,7 @@ def save_page(page_data: dict):
 def main():
     """Main scraper function."""
     # Setup basic logging for standalone execution
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    setup_logging("INFO")
     
     logger.info("=" * 60)
     logger.info("Tunic Wiki Scraper")

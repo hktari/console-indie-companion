@@ -28,6 +28,7 @@ from src.capture.replay import ReplayCapture
 from src.vlm.analyze import SceneAnalyzer
 from src.voice.realtime import VoiceSession
 from src.utils import CostTracker
+from src.utils.logging_config import setup_logging
 from src.prompts.tunic_companion import (
     CONTEXT_UPDATE_TEMPLATE,
     SYSTEM_INSTRUCTIONS,
@@ -318,17 +319,10 @@ def main() -> None:
     args = parse_args()
 
     # Logging
-    numeric_level = getattr(logging, args.log_level.upper(), None)
-    if not isinstance(numeric_level, int):
-        numeric_level = logging.INFO
-
-    logging.basicConfig(
-        level=numeric_level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    log_file = setup_logging(args.log_level)
 
     # Suppress noisy library logs unless in DEBUG mode
+    numeric_level = getattr(logging, args.log_level.upper(), logging.INFO)
     if numeric_level > logging.DEBUG:
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("google_genai").setLevel(logging.WARNING)

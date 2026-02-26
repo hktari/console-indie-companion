@@ -16,6 +16,8 @@ from pathlib import Path
 import chromadb
 from chromadb.config import Settings
 
+from src.utils.logging_config import setup_logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -151,11 +153,7 @@ def index_to_chromadb(chunks: list[str], metadatas: list[dict], ids: list[str]):
 def main():
     """Main indexer function."""
     # Setup basic logging for standalone execution
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    setup_logging("INFO")
     
     logger.info("=" * 60)
     logger.info("Tunic Wiki RAG Indexer")
