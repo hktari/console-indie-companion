@@ -83,6 +83,7 @@ class VoiceSession:
         api_key: Optional[str] = None,
         system_instructions: str = "",
         cost_tracker: Optional[Any] = None,
+        context_manager: Optional[Any] = None,
     ) -> None:
         """Initialise with OpenAI API key and initial system instructions.
 
@@ -99,6 +100,8 @@ class VoiceSession:
             )
 
         self.system_instructions = system_instructions
+        self._cost_tracker = cost_tracker
+        self._context_manager = context_manager
         self.config_path = os.path.join(os.path.dirname(__file__), "session_config.json")
         self._session_config = {}
 
@@ -663,6 +666,21 @@ class VoiceSession:
             if transcript:
                 realtime_logger.info(f"\n[You] {transcript}\n")
                 logger.info("User transcript: %s", transcript)
+
+                if self._context_manager:
+                    logger.debug("User spoke, preparing to inject recent context...")
+                    num_context = self._session_config.get("num_scenes_for_context", 5)
+                    num_rag = self._session_config.get("num_scenes_for_rag", 3)
+                    
+                    context_text = self._context_manager.get_recent_context(
+                        num_scenes_context=num_context,
+                        num_scenes_rag=num_rag,
+                    )
+                    
+                    if context_text:
+                        # Schedule the injection to run on the event loop
+                        asyncio.create_task(self.inject_context(context_text))
+                        logger.info("Scheduled context injection (%d chars) based on user prompt.", len(context_text))
 
         # -- Response lifecycle ------------------------------------------
         elif event_type == "response.created":
