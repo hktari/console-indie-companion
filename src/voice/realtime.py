@@ -46,7 +46,7 @@ CHUNK_DURATION_MS = 100  # ms per mic capture chunk
 CHUNK_SAMPLES = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)  # samples/chunk
 BYTES_PER_SAMPLE = 2  # PCM16 = 2 bytes per sample
 
-MODEL = "gpt-realtime"
+MODEL = "gpt-realtime-mini"
 WS_URL = f"wss://api.openai.com/v1/realtime?model={MODEL}"
 
 DEFAULT_INSTRUCTIONS = (
@@ -170,9 +170,9 @@ class VoiceSession:
                     "input_audio_transcription": {"model": "whisper-1"},
                     "turn_detection": {
                         "type": "server_vad",
-                        "threshold": 0.3,
+                        "threshold": 0.4,
                         "prefix_padding_ms": 300,
-                        "silence_duration_ms": 500
+                        "silence_duration_ms": 1000
                     },
                     "temperature": 0.7,
                     "tools": [
