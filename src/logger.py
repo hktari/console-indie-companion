@@ -1,4 +1,5 @@
 import logging
+import sys
 
 def setup_logger(name, log_file, level=logging.INFO):
     """Function to setup as many loggers as you want"""
@@ -10,11 +11,15 @@ def setup_logger(name, log_file, level=logging.INFO):
     if logger.hasHandlers():
         logger.handlers.clear()
 
-    handler = logging.FileHandler(log_file, mode='w') # Use 'w' to clear log on start
-    handler.setFormatter(formatter)
+    file_handler = logging.FileHandler(log_file, mode='w') # Use 'w' to clear log on start
+    file_handler.setFormatter(formatter)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
 
     logger.setLevel(level)
-    logger.addHandler(handler)
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
 
     return logger
 
