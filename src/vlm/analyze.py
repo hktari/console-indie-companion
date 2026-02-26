@@ -80,6 +80,7 @@ class SceneAnalyzer:
         max_retries = 3
         for attempt in range(max_retries):
             try:
+                t0 = time.perf_counter()
                 response = self._client.models.generate_content(
                     model=self._model,
                     contents=[
@@ -95,6 +96,7 @@ class SceneAnalyzer:
                         response_mime_type="application/json",
                     ),
                 )
+                duration_s = time.perf_counter() - t0
                 
                 # Log cost if tracker is available
                 if self._cost_tracker and response.usage_metadata:
@@ -103,9 +105,15 @@ class SceneAnalyzer:
                         model=self._model,
                         input_tokens=response.usage_metadata.prompt_token_count,
                         output_tokens=response.usage_metadata.candidates_token_count,
+                        duration_seconds=duration_s,
                     )
                     
-                logger.info("VLM analysis result: %s", response.text)
+                logger.info(
+                    "VLM analysis (model=%s) took %.2fs, result: %s",
+                    self._model,
+                    duration_s,
+                    response.text,
+                )
                 return self._parse_response(response.text)
 
             except Exception as e:

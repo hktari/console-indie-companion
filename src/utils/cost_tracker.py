@@ -157,6 +157,27 @@ class CostTracker:
             "call_count": len(self._calls),
         }
 
+    def get_calls(self) -> list[APICall]:
+        """Return a copy of the logged API calls.
+
+        Intended for benchmarking/reporting.
+        """
+        return list(self._calls)
+
+    def get_calls_as_dicts(self) -> list[dict]:
+        """Return logged API calls as JSON-serializable dicts."""
+        return [
+            {
+                "service": c.service,
+                "model": c.model,
+                "input_tokens": c.input_tokens,
+                "output_tokens": c.output_tokens,
+                "duration_seconds": c.duration_seconds,
+                "timestamp": c.timestamp.isoformat(),
+            }
+            for c in self._calls
+        ]
+
     def print_summary(self) -> None:
         """Log a formatted cost summary."""
         cost_data = self.get_session_cost()
