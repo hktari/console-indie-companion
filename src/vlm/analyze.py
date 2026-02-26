@@ -13,9 +13,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from src.utils.logging_config import setup_logging
-
-logger = logging.getLogger(__name__)
+from src.logger import analysis_logger as logger
 
 ANALYSIS_PROMPT = """\
 Analyze this screenshot from the game Tunic and return a JSON object with exactly these fields.
@@ -353,8 +351,6 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    # Logging
-    setup_logging(args.log_level)
 
     if args.image:
         run_single(args.image)

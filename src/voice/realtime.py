@@ -32,6 +32,8 @@ except (ImportError, OSError) as _sd_err:
     _sd_import_error = _sd_err
 
 import websockets
+
+from src.logger import realtime_logger
 from src.prompts.tunic_companion import SYSTEM_INSTRUCTIONS
 from dotenv import load_dotenv
 
@@ -129,6 +131,9 @@ class VoiceSession:
         
         # Audio cost tracking
         self._audio_session_start: Optional[float] = None
+
+        # Transcript buffering
+        self._transcript_buffer: list[str] = []
 
     # ------------------------------------------------------------------
     # Public API
@@ -619,12 +624,16 @@ class VoiceSession:
         elif event_type == "response.audio_transcript.delta":
             fragment = event.get("delta", "")
             if fragment:
-                # We still print to stdout for real-time feedback, 
-                # but could also log to a file if needed.
+                self._transcript_buffer.append(fragment)
+                # We still print to stdout for real-time feedback
                 print(fragment, end="", flush=True)
 
         elif event_type == "response.audio_transcript.done":
-            print()  # newline after full transcript
+            full_transcript = "".join(self._transcript_buffer).strip()
+            if full_transcript:
+                realtime_logger.info(full_transcript)
+            self._transcript_buffer.clear()
+            print()  # Newline for stdout
             logger.info("Assistant response complete")
 
         # -- VAD / turn detection ----------------------------------------
@@ -652,7 +661,7 @@ class VoiceSession:
         elif event_type == "conversation.item.input_audio_transcription.completed":
             transcript = event.get("transcript", "")
             if transcript:
-                print(f"\n[You] {transcript}\n")
+                realtime_logger.info(f"\n[You] {transcript}\n")
                 logger.info("User transcript: %s", transcript)
 
         # -- Response lifecycle ------------------------------------------

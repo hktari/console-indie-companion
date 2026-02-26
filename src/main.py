@@ -30,7 +30,7 @@ from src.capture.replay import ReplayCapture
 from src.vlm.analyze import SceneAnalyzer
 from src.voice.realtime import VoiceSession
 from src.utils import CostTracker
-from src.utils.logging_config import setup_logging
+from src.logger import main_logger as logger, analysis_logger
 from src.prompts.tunic_companion import (
     CONTEXT_UPDATE_TEMPLATE,
     SYSTEM_INSTRUCTIONS,
@@ -44,7 +44,6 @@ try:
 except Exception:
     query_tunic_knowledge = None  # type: ignore[assignment]
 
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--interval",
         type=float,
-        default=3.0,
+        default=0.0, # gemini-2.5-flash-lite has around 2s latency anyway
         help="Screenshot interval in seconds (default: 3).",
     )
     parser.add_argument(
@@ -95,7 +94,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default="gemini-2.5-flash",
+        default="gemini-2.5-flash-lite",
         choices=["gemini-2.5-flash", "gemini-2.5-flash-lite"],
         help="Gemini model to use (default: gemini-2.5-flash). Use 'gemini-2.5-flash-lite' for lower cost.",
     )
@@ -294,10 +293,10 @@ async def run_pipeline(args: argparse.Namespace) -> None:
                 continue
 
             analysis_count += 1
-            logger.debug(
+            analysis_logger.info(
                 "[#%d] Scene: %s | Location: %s | Activity: %s | Health: %s",
                 analysis_count,
-                scene.get("description", "unknown")[:80],
+                (scene.get("description") or "unknown")[:80],
                 scene.get("location", "?"),
                 scene.get("activity", "?"),
                 scene.get("health_status", "?"),
@@ -360,7 +359,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
         except Exception:
             logger.exception("Error stopping voice session")
     logger.info("Shutdown complete")
-    cost_tracker.print_summary()
+    logger.info(cost_tracker.get_summary_string())
 
 
 # ---------------------------------------------------------------------------
@@ -372,12 +371,10 @@ def main() -> None:
     """CLI entry point."""
     args = parse_args()
 
-    # Logging
-    log_file = setup_logging(args.log_level)
 
     # Suppress noisy library logs unless in DEBUG mode
-    numeric_level = getattr(logging, args.log_level.upper(), logging.INFO)
-    if numeric_level > logging.DEBUG:
+    log_level = args.log_level.upper()
+    if log_level != "DEBUG":
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("google_genai").setLevel(logging.WARNING)
 

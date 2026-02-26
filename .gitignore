@@ -59,3 +59,6 @@ node_modules/
 *.egg-info/
 .venv/
 dist/
+
+# Log files
+*.log

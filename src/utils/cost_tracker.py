@@ -4,11 +4,13 @@ Logs API calls and estimates costs for different services.
 Provides a simple interface to track usage and print summaries.
 """
 
-import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
+# Note: The logger from this module is no longer used, 
+# but we keep the import for now to avoid breaking other modules that might use it.
+import logging
 logger = logging.getLogger(__name__)
 
 
@@ -178,8 +180,8 @@ class CostTracker:
             for c in self._calls
         ]
 
-    def print_summary(self) -> None:
-        """Log a formatted cost summary."""
+    def get_summary_string(self) -> str:
+        """Return a formatted cost summary as a string."""
         cost_data = self.get_session_cost()
         
         summary_lines = []
@@ -190,8 +192,7 @@ class CostTracker:
         if cost_data["call_count"] == 0:
             summary_lines.append("No API calls logged.")
             summary_lines.append("=" * 70 + "\n")
-            logger.info("\n".join(summary_lines))
-            return
+            return "\n".join(summary_lines)
 
         summary_lines.append(f"Total API calls: {cost_data['call_count']}")
         summary_lines.append(f"Total estimated cost: ${cost_data['total_cost']:.4f}")
@@ -215,7 +216,7 @@ class CostTracker:
             summary_lines.append("")
 
         summary_lines.append("=" * 70 + "\n")
-        logger.info("\n".join(summary_lines))
+        return "\n".join(summary_lines)
 
     def _estimate_call_cost(self, call: APICall) -> float:
         """Estimate the cost of a single API call.
