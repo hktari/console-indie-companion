@@ -26,6 +26,7 @@ dependencies = [
     "numpy>=1.23.0",
     "pillow>=12.1.1",
     "pyaudio>=0.2.14",
+    "langchain-text-splitters>=1.1.1",
 ]
 
 [project.optional-dependencies]

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Tunic Wiki Scraper
+Tunic Wiki Scraper (tunic.wiki)
 
-Scrapes content from the Tunic Fandom wiki and saves it as JSON files.
-Target: https://tunic.fandom.com/wiki/
+Scrapes BookStack-based tunic.wiki using its markdown export feature.
+Extracts structured metadata based on the Book.
 
 Usage:
     python -m src.rag.scrape
@@ -14,229 +14,171 @@ import json
 import re
 import time
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
-
+from urllib.parse import urljoin
 import requests
-from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from src.utils.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 
-
 # Configuration
-BASE_URL = "https://tunic.fandom.com"
-WIKI_BASE = f"{BASE_URL}/wiki/"
+BASE_URL = "https://tunic.wiki"
 DATA_DIR = Path(__file__).parent.parent.parent / "data" / "wiki"
-DELAY_SECONDS = 0.5
+DELAY_SECONDS = 3.0
 
-# Pages to skip (non-content)
-SKIP_PREFIXES = [
-    "User:",
-    "Talk:",
-    "Special:",
-    "File:",
-    "Template:",
-    "Category:",
-    "Help:",
-    "Forum:",
-    "MediaWiki:",
-    "Thread:",
-    "Message_Wall:",
-    "User_blog:",
-    "Blog:",
-]
+# Books to scrape and their corresponding metadata categories
+BOOKS = {
+    "locations": "location",
+    "items": "item",
+    "creatures": "creature",
+    "secrets": "secret",
+    "faq": "general",
+    "instruction-booklet": "mechanic",
+    "speedrunning": "speedrun"
+}
 
+def get_session():
+    session = requests.Session()
+    retry = Retry(
+        total=5,
+        backoff_factor=2,
+        status_forcelist=[429, 500, 502, 503, 504],
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
 
-def is_valid_content_page(title: str) -> bool:
-    """Check if a page title represents valid content."""
-    return not any(title.startswith(prefix) for prefix in SKIP_PREFIXES)
-
-
-def extract_page_content(soup: BeautifulSoup) -> list[dict]:
-    """Extract structured content from a wiki page."""
-    sections = []
+def clean_markdown(md_text: str) -> str:
+    """Basic cleanup of markdown text (remove image links, messy tables)."""
+    # Remove image links like [![alt](url)](url) or [![](url)](url)
+    md_text = re.sub(r'\[!\[.*?\]\([^)]+\)\]\([^)]+\)', '', md_text)
+    # Remove simple images ![](url)
+    md_text = re.sub(r'!\[.*?\]\([^)]+\)', '', md_text)
     
-    # Find the main content area
-    content_div = soup.find("div", {"class": "mw-parser-output"})
-    if not content_div:
-        return sections
+    # Try to convert HTML tables to simple text formats
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(md_text, "html.parser")
+    for table in soup.find_all("table"):
+        table_text = []
+        for row in table.find_all("tr"):
+            row_data = []
+            for cell in row.find_all(["td", "th"]):
+                # Extract text, removing inner HTML tags like links
+                cell_text = cell.get_text(separator=" ", strip=True)
+                if cell_text and cell_text != "-":
+                    row_data.append(cell_text)
+            if row_data:
+                table_text.append(" | ".join(row_data))
+        
+        # Replace the table in the soup with the text representation
+        if table_text:
+            text_node = soup.new_string("\n" + "\n".join(table_text) + "\n")
+            table.replace_with(text_node)
+        else:
+            table.decompose()
+            
+    # Also strip any other stray HTML tags that bs4 finds
+    md_text = soup.get_text(separator="\n")
     
-    current_section = {"header": "Introduction", "content": []}
+    # Clean up empty lines and trailing spaces
+    md_text = re.sub(r'\n\s*\n', '\n\n', md_text)
+    return md_text.strip()
+
+def parse_book_markdown(md_text: str, book_slug: str, category: str) -> list[dict]:
+    """Parse the giant markdown file into individual pages/sections."""
+    pages = []
     
-    for element in content_div.children:
-        if not hasattr(element, 'name'):
+    # BookStack markdown export concatenates pages with `# Page Title`
+    # We split by `# ` (level 1 heading)
+    parts = re.split(r'^# ', md_text, flags=re.MULTILINE)
+    
+    for part in parts:
+        part = part.strip()
+        if not part:
             continue
             
-        # Section headers
-        if element.name in ['h2', 'h3', 'h4']:
-            # Save previous section if it has content
-            if current_section["content"]:
-                sections.append({
-                    "header": current_section["header"],
-                    "content": "\n".join(current_section["content"]).strip()
-                })
+        lines = part.split('\n')
+        title = lines[0].strip()
+        content = '\n'.join(lines[1:]).strip()
+        
+        # Skip empty content or just the book title
+        if not content or title.lower() == book_slug.lower():
+            continue
             
-            # Start new section
-            header_text = element.get_text(strip=True)
-            # Remove [edit] links
-            header_text = re.sub(r'\[edit\]', '', header_text).strip()
-            current_section = {"header": header_text, "content": []}
-        
-        # Paragraphs and lists
-        elif element.name in ['p', 'ul', 'ol', 'dl']:
-            text = element.get_text(separator=' ', strip=True)
-            if text:
-                current_section["content"].append(text)
-    
-    # Add final section
-    if current_section["content"]:
-        sections.append({
-            "header": current_section["header"],
-            "content": "\n".join(current_section["content"]).strip()
-        })
-    
-    return sections
-
-
-def fetch_all_pages() -> list[str]:
-    """Fetch all wiki page URLs from Special:AllPages."""
-    logger.info("Fetching page list from Special:AllPages...")
-    all_pages = []
-    
-    # Fandom wikis use Special:AllPages with pagination
-    url = f"{BASE_URL}/wiki/Special:AllPages"
-    
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.content, "html.parser")
-        
-        # Find all links in the allpages list
-        allpages_content = soup.find("div", {"class": "mw-allpages-body"}) or soup.find("ul", {"class": "mw-allpages-chunk"})
-        
-        if allpages_content:
-            links = allpages_content.find_all("a")
-            for link in links:
-                href = link.get("href")
-                if href and href.startswith("/wiki/"):
-                    page_title = href.replace("/wiki/", "")
-                    if is_valid_content_page(page_title):
-                        all_pages.append(href)
-        
-        # Also crawl from main page to find more pages
-        main_response = requests.get(f"{BASE_URL}/wiki/Tunic_Wiki", timeout=10)
-        main_soup = BeautifulSoup(main_response.content, "html.parser")
-        content_links = main_soup.find_all("a", href=re.compile(r"^/wiki/[^:]+$"))
-        
-        for link in content_links:
-            href = link.get("href")
-            if href and href not in all_pages:
-                page_title = href.replace("/wiki/", "")
-                if is_valid_content_page(page_title):
-                    all_pages.append(href)
-        
-    except Exception as e:
-        logger.error("Error fetching page list: %s", e)
-        # Fallback: use a seed list of important pages
-        all_pages = [
-            "/wiki/Tunic_Wiki",
-            "/wiki/Bosses",
-            "/wiki/Enemies",
-            "/wiki/Items",
-            "/wiki/Locations",
-            "/wiki/Characters",
-            "/wiki/Gameplay",
-            "/wiki/Story",
-        ]
-    
-    # Remove duplicates
-    all_pages = list(set(all_pages))
-    logger.info("Found %d pages to scrape", len(all_pages))
-    
-    return all_pages
-
-
-def scrape_page(page_url: str) -> dict | None:
-    """Scrape a single wiki page."""
-    full_url = urljoin(BASE_URL, page_url)
-    page_title = page_url.replace("/wiki/", "")
-    
-    logger.info("Scraping: %s", page_title)
-    
-    try:
-        response = requests.get(full_url, timeout=10)
-        response.raise_for_status()
-        
-        soup = BeautifulSoup(response.content, "html.parser")
-        
-        # Get the page title
-        title_element = soup.find("h1", {"class": "page-header__title"}) or soup.find("h1", {"id": "firstHeading"})
-        title = title_element.get_text(strip=True) if title_element else page_title
-        
-        # Extract content sections
-        sections = extract_page_content(soup)
-        
-        if not sections:
-            logger.warning("  ⚠ No content found for %s", page_title)
-            return None
-        
-        return {
+        pages.append({
             "title": title,
-            "url": full_url,
-            "page_id": page_title,
-            "sections": sections
-        }
+            "url": f"{BASE_URL}/books/{book_slug}/page/{title.lower().replace(' ', '-')}",
+            "page_id": f"{book_slug}_{title.lower().replace(' ', '_')}",
+            "metadata": {
+                "category": category,
+                "book": book_slug
+            },
+            "sections": [
+                {
+                    "header": "Content",
+                    "content": clean_markdown(content)
+                }
+            ]
+        })
+        
+    return pages
+
+def scrape_book(book_slug: str, category: str, session: requests.Session) -> list[dict]:
+    """Download a book's markdown export and parse it."""
+    url = f"{BASE_URL}/books/{book_slug}/export/markdown"
+    logger.info("Scraping book: %s from %s", book_slug, url)
+    
+    try:
+        response = session.get(url, timeout=30)
+        response.raise_for_status()
+        
+        md_text = response.text
+        pages = parse_book_markdown(md_text, book_slug, category)
+        logger.info("  ✓ Extracted %d pages from %s", len(pages), book_slug)
+        return pages
         
     except Exception as e:
-        logger.error("  ✗ Error scraping %s: %s", page_title, e)
-        return None
-
-
-def save_page(page_data: dict):
-    """Save page data as JSON."""
-    # Create a safe filename from page_id
-    filename = re.sub(r'[^\w\-_]', '_', page_data["page_id"])
-    filepath = DATA_DIR / f"{filename}.json"
-    
-    with open(filepath, 'w', encoding='utf-8') as f:
-        json.dump(page_data, f, ensure_ascii=False, indent=2)
-
+        logger.error("  ✗ Error scraping book %s: %s", book_slug, e)
+        return []
 
 def main():
-    """Main scraper function."""
-    # Setup basic logging for standalone execution
     setup_logging("INFO")
-    
     logger.info("=" * 60)
-    logger.info("Tunic Wiki Scraper")
+    logger.info("Tunic Wiki Scraper (tunic.wiki)")
     logger.info("=" * 60)
     
-    # Ensure data directory exists
+    # Clear old Fandom wiki data
+    if DATA_DIR.exists():
+        import shutil
+        logger.info("Clearing old Fandom wiki data...")
+        shutil.rmtree(DATA_DIR)
+        
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     
-    # Fetch all pages
-    pages = fetch_all_pages()
+    total_pages = 0
+    session = get_session()
     
-    # Scrape each page
-    scraped_count = 0
-    for i, page_url in enumerate(pages, 1):
-        page_data = scrape_page(page_url)
+    for book_slug, category in BOOKS.items():
+        pages = scrape_book(book_slug, category, session)
         
-        if page_data:
-            save_page(page_data)
-            scraped_count += 1
-            logger.info("  ✓ Saved [%d/%d]", scraped_count, len(pages))
+        for page in pages:
+            # Save each page as a JSON file to match the expected format for index.py
+            filename = re.sub(r'[^\w\-_]', '_', page["page_id"])[:100]
+            filepath = DATA_DIR / f"{filename}.json"
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(page, f, ensure_ascii=False, indent=2)
+            total_pages += 1
+            
+        time.sleep(DELAY_SECONDS)
         
-        # Be respectful: delay between requests
-        if i < len(pages):
-            time.sleep(DELAY_SECONDS)
-    
     logger.info("=" * 60)
-    logger.info("Scraping complete! Scraped %d pages.", scraped_count)
+    logger.info("Scraping complete! Saved %d pages.", total_pages)
     logger.info("Data saved to: %s", DATA_DIR)
     logger.info("=" * 60)
-
 
 if __name__ == "__main__":
     main()

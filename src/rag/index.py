@@ -10,11 +10,13 @@ Usage:
 """
 
 import logging
+from typing import Any, Dict, List
 import json
 from pathlib import Path
 
 import chromadb
 from chromadb.config import Settings
+from chromadb.api.types import Metadata
 
 from src.utils.logging_config import setup_logging
 
@@ -47,24 +49,22 @@ def load_wiki_pages() -> list[dict]:
     return pages
 
 
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
-    """Chunk text into fixed-size pieces with overlap."""
+    """Chunk text using semantic markdown splitting."""
     if len(text) <= chunk_size:
         return [text]
     
-    chunks = []
-    start = 0
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=overlap,
+        separators=["\n\n", "\n", ". ", " ", ""],
+        length_function=len,
+        is_separator_regex=False,
+    )
     
-    while start < len(text):
-        end = start + chunk_size
-        chunk = text[start:end]
-        
-        if chunk.strip():
-            chunks.append(chunk.strip())
-        
-        start = end - overlap
-    
-    return chunks
+    return splitter.split_text(text)
 
 
 def create_chunks_from_pages(pages: list[dict]) -> tuple[list[str], list[dict], list[str]]:
@@ -96,13 +96,23 @@ def create_chunks_from_pages(pages: list[dict]) -> tuple[list[str], list[dict], 
             
             for i, chunk in enumerate(chunks):
                 all_chunks.append(chunk)
-                all_metadatas.append({
+                
+                # Base metadata
+                meta = {
                     "source_page": page_title,
                     "page_id": page_id,
                     "page_url": page_url,
                     "section_header": section_header,
                     "chunk_index": i
-                })
+                }
+                
+                # Add structured metadata if available
+                if "metadata" in page and isinstance(page["metadata"], dict):
+                    for k, v in page["metadata"].items():
+                        if isinstance(v, (str, int, float, bool)):
+                            meta[k] = v
+                
+                all_metadatas.append(meta)
                 all_ids.append(f"chunk_{chunk_id_counter}")
                 chunk_id_counter += 1
     
@@ -135,7 +145,8 @@ def index_to_chromadb(chunks: list[str], metadatas: list[dict], ids: list[str]):
     
     for i in range(0, len(chunks), batch_size):
         batch_chunks = chunks[i:i+batch_size]
-        batch_metadatas = metadatas[i:i+batch_size]
+        # Cast to Any to satisfy chromadb type hints which are strict about dict values
+        batch_metadatas: Any = metadatas[i:i+batch_size]
         batch_ids = ids[i:i+batch_size]
         
         collection.add(

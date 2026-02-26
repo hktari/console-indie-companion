@@ -11,6 +11,7 @@ Usage:
 import logging
 import sys
 from pathlib import Path
+from typing import Optional
 
 import chromadb
 from chromadb.config import Settings
@@ -24,12 +25,13 @@ CHROMA_DIR = Path(__file__).parent.parent.parent / "data" / "chroma"
 COLLECTION_NAME = "tunic_wiki"
 
 
-def query_tunic_knowledge(question: str, n_results: int = 5) -> list[str]:
+def query_tunic_knowledge(question: str, category_filter: Optional[str] = None, n_results: int = 5) -> list[str]:
     """
     Query the Tunic wiki knowledge base for relevant information.
     
     Args:
         question: User's question about Tunic
+        category_filter: Optional metadata category to filter by (e.g., "location", "item")
         n_results: Number of relevant chunks to return (default: 5)
     
     Returns:
@@ -55,19 +57,33 @@ def query_tunic_knowledge(question: str, n_results: int = 5) -> list[str]:
             f"Error: {e}"
         )
     
-    results = collection.query(
-        query_texts=[question],
-        n_results=n_results
-    )
+    query_args = {
+        "query_texts": [question],
+        "n_results": n_results
+    }
     
-    documents = results.get("documents", [[]])[0]
-    metadatas = results.get("metadatas", [[]])[0]
+    if category_filter:
+        query_args["where"] = {"category": category_filter}
+    
+    results = collection.query(**query_args)
+    
+    documents = results.get("documents", [])
+    metadatas = results.get("metadatas", [])
+    
+    if not documents or not metadatas:
+        return []
+        
+    doc_list = documents[0]
+    meta_list = metadatas[0]
     
     formatted_results = []
-    for doc, meta in zip(documents, metadatas):
+    for doc, meta in zip(doc_list, meta_list):
+        if meta is None:
+            continue
+            
         source_page = meta.get("source_page", "Unknown")
-        section = meta.get("section_header", "Unknown")
-        formatted_results.append(f"[{source_page} > {section}]\n{doc}")
+        category = str(meta.get("category", "general")).upper()
+        formatted_results.append(f"[{category} | {source_page}]\n{doc}")
     
     return formatted_results
 

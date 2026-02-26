@@ -175,6 +175,29 @@ class VoiceSession:
                         "silence_duration_ms": 500
                     },
                     "temperature": 0.7,
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "query_knowledge_base",
+                            "description": "Query the Tunic knowledge base to find information about items, locations, creatures, mechanics, or secrets.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "search_query": {
+                                        "type": "string",
+                                        "description": "The specific question or keywords to search for."
+                                    },
+                                    "metadata_category": {
+                                        "type": "string",
+                                        "enum": ["location", "item", "creature", "secret", "mechanic", "general", "speedrun"],
+                                        "description": "Optional category to filter the search results. Only use if the search is highly specific to a category."
+                                    }
+                                },
+                                "required": ["search_query"]
+                            }
+                        }
+                    ],
+                    "tool_choice": "auto",
                 },
             }
         )
@@ -415,6 +438,29 @@ class VoiceSession:
                         "silence_duration_ms": 500
                     },
                     "temperature": 0.7,
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "query_knowledge_base",
+                            "description": "Query the Tunic knowledge base to find information about items, locations, creatures, mechanics, or secrets.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "search_query": {
+                                        "type": "string",
+                                        "description": "The specific question or keywords to search for."
+                                    },
+                                    "metadata_category": {
+                                        "type": "string",
+                                        "enum": ["location", "item", "creature", "secret", "mechanic", "general", "speedrun"],
+                                        "description": "Optional category to filter the search results. Only use if the search is highly specific to a category."
+                                    }
+                                },
+                                "required": ["search_query"]
+                            }
+                        }
+                    ],
+                    "tool_choice": "auto",
                 },
             }
         )
@@ -554,6 +600,62 @@ class VoiceSession:
                 err.get("code", "?"),
                 err.get("message", "?"),
             )
+            
+        # -- Function calling --------------------------------------------
+        elif event_type == "response.function_call_arguments.done":
+            call_id = event.get("call_id")
+            name = event.get("name")
+            arguments_str = event.get("arguments", "{}")
+            
+            if name == "query_knowledge_base":
+                logger.info("Agent called tool: %s with args %s", name, arguments_str)
+                try:
+                    args = json.loads(arguments_str)
+                    search_query = args.get("search_query", "")
+                    category = args.get("metadata_category")
+                    
+                    # Need to lazily import to avoid circular dependency
+                    from src.rag.query import query_tunic_knowledge
+                    
+                    results = query_tunic_knowledge(
+                        question=search_query,
+                        category_filter=category,
+                        n_results=3
+                    )
+                    
+                    if results:
+                        response_text = "\n\n".join(results)
+                    else:
+                        response_text = "No relevant information found in the knowledge base."
+                        
+                    # Create tool response item
+                    tool_msg = {
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": response_text
+                        }
+                    }
+                    asyncio.create_task(self._send_event(tool_msg))
+                    
+                    # Request generation of response based on tool output
+                    asyncio.create_task(self._send_event({
+                        "type": "response.create"
+                    }))
+                    
+                except Exception as e:
+                    logger.error("Error executing tool %s: %s", name, e, exc_info=True)
+                    # Send error back to agent
+                    asyncio.create_task(self._send_event({
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": f"Error querying knowledge base: {e}"
+                        }
+                    }))
+                    asyncio.create_task(self._send_event({"type": "response.create"}))
 
         # -- Rate limits -------------------------------------------------
         elif event_type == "rate_limits.updated":
