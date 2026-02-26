@@ -94,7 +94,17 @@ class VoiceSession:
                 "OpenAI API key required. Set OPENAI_API_KEY env var or pass api_key."
             )
 
-        self.system_instructions = system_instructions or DEFAULT_INSTRUCTIONS
+        self.system_instructions = system_instructions
+        self.config_path = "session_config.json"
+        self.prompt_path = "prompt.txt"
+        self._session_config = {}
+
+        # Load initial config
+        self._load_config()
+
+        if not self.system_instructions:
+            self._load_prompt()
+
         self._cost_tracker = cost_tracker
 
         # Connection state
@@ -158,47 +168,40 @@ class VoiceSession:
             raise ConnectionError("Timeout waiting for session.created from API")
 
         # Configure the session (voice, VAD, audio format, instructions).
+        config_payload = self._session_config.copy()
+        config_payload["instructions"] = self.system_instructions
+        config_payload["modalities"] = ["audio", "text"]
+        config_payload["input_audio_format"] = "pcm16"
+        config_payload["output_audio_format"] = "pcm16"
+        config_payload["input_audio_transcription"] = {"model": "whisper-1"}
+        config_payload["tools"] = [
+            {
+                "type": "function",
+                "name": "query_knowledge_base",
+                "description": "Query the Tunic knowledge base to find information about items, locations, creatures, mechanics, or secrets.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "search_query": {
+                            "type": "string",
+                            "description": "The specific question or keywords to search for."
+                        },
+                        "metadata_category": {
+                            "type": "string",
+                            "enum": ["location", "item", "creature", "secret", "mechanic", "general", "speedrun"],
+                            "description": "Optional category to filter the search results. Only use if the search is highly specific to a category."
+                        }
+                    },
+                    "required": ["search_query"]
+                }
+            }
+        ]
+        config_payload["tool_choice"] = "auto"
+
         await self._send_event(
             {
                 "type": "session.update",
-                "session": {
-                    "modalities": ["audio", "text"],
-                    "instructions": self.system_instructions,
-                    "voice": "ballad",
-                    "input_audio_format": "pcm16",
-                    "output_audio_format": "pcm16",
-                    "input_audio_transcription": {"model": "whisper-1"},
-                    "turn_detection": {
-                        "type": "server_vad",
-                        "threshold": 0.4,
-                        "prefix_padding_ms": 300,
-                        "silence_duration_ms": 1000
-                    },
-                    "temperature": 0.7,
-                    "tools": [
-                        {
-                            "type": "function",
-                            "name": "query_knowledge_base",
-                            "description": "Query the Tunic knowledge base to find information about items, locations, creatures, mechanics, or secrets.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "search_query": {
-                                        "type": "string",
-                                        "description": "The specific question or keywords to search for."
-                                    },
-                                    "metadata_category": {
-                                        "type": "string",
-                                        "enum": ["location", "item", "creature", "secret", "mechanic", "general", "speedrun"],
-                                        "description": "Optional category to filter the search results. Only use if the search is highly specific to a category."
-                                    }
-                                },
-                                "required": ["search_query"]
-                            }
-                        }
-                    ],
-                    "tool_choice": "auto",
-                },
+                "session": config_payload,
             }
         )
 
@@ -292,6 +295,41 @@ class VoiceSession:
 
         # Check if rotation is needed
         await self._check_rotation()
+
+    async def reload_config(self) -> None:
+        """Hot-reload configuration from files and send a session.update event."""
+        logger.info("Reloading configuration...")
+        self._load_config()
+        self._load_prompt()
+
+        update_payload = self._session_config.copy()
+        update_payload["instructions"] = self.system_instructions
+
+        await self._send_event(
+            {
+                "type": "session.update",
+                "session": update_payload,
+            }
+        )
+        logger.info("Configuration reloaded and sent to API.")
+
+    def _load_config(self) -> None:
+        """Load session parameters from the JSON config file."""
+        try:
+            with open(self.config_path, "r") as f:
+                self._session_config = json.load(f)
+                logger.debug("Loaded session config from %s", self.config_path)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logger.error("Could not load or parse %s: %s", self.config_path, e)
+
+    def _load_prompt(self) -> None:
+        """Load system instructions from the prompt text file."""
+        try:
+            with open(self.prompt_path, "r") as f:
+                self.system_instructions = f.read()
+                logger.debug("Loaded prompt from %s", self.prompt_path)
+        except FileNotFoundError as e:
+            logger.error("Could not load %s: %s", self.prompt_path, e)
 
     def is_connected(self) -> bool:
         """Return *True* if the WebSocket connection is alive."""
