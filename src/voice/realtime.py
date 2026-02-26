@@ -31,6 +31,11 @@ except (ImportError, OSError) as _sd_err:
     sd = None
     _sd_import_error = _sd_err
 
+try:
+    import pyaudio
+except ImportError:
+    pyaudio = None
+
 import websockets
 
 from src.logger import realtime_logger
@@ -83,6 +88,7 @@ class VoiceSession:
         api_key: Optional[str] = None,
         system_instructions: str = "",
         cost_tracker: Optional[Any] = None,
+        context_manager: Optional[Any] = None,
     ) -> None:
         """Initialise with OpenAI API key and initial system instructions.
 
@@ -99,6 +105,8 @@ class VoiceSession:
             )
 
         self.system_instructions = system_instructions
+        self._cost_tracker = cost_tracker
+        self._context_manager = context_manager
         self.config_path = os.path.join(os.path.dirname(__file__), "session_config.json")
         self._session_config = {}
 
@@ -112,7 +120,7 @@ class VoiceSession:
         self._cost_tracker = cost_tracker
 
         # Connection state
-        self._ws: Optional[websockets.WebSocketClientProtocol] = None
+        self._ws: Optional[Any] = None
         self._connected: bool = False
         self._tasks: list[asyncio.Task] = []
 
@@ -122,7 +130,7 @@ class VoiceSession:
         self._playback_lock = threading.Lock()
 
         # Sounddevice streams
-        self._input_stream: Optional[object] = None
+        self._input_stream: Optional[Any] = None
         self._output_stream: Optional[object] = None
 
         # Session rotation tracking
@@ -161,6 +169,7 @@ class VoiceSession:
             raise
 
         # Wait for the mandatory ``session.created`` event.
+        assert self._ws is not None
         try:
             raw = await asyncio.wait_for(self._ws.recv(), timeout=10)
             event = json.loads(raw)
@@ -489,6 +498,7 @@ class VoiceSession:
             raise
 
         # Wait for session.created
+        assert self._ws is not None
         try:
             raw = await asyncio.wait_for(self._ws.recv(), timeout=10)
             event = json.loads(raw)
@@ -664,6 +674,21 @@ class VoiceSession:
                 realtime_logger.info(f"\n[You] {transcript}\n")
                 logger.info("User transcript: %s", transcript)
 
+                if self._context_manager:
+                    logger.debug("User spoke, preparing to inject recent context...")
+                    num_context = self._session_config.get("num_scenes_for_context", 5)
+                    num_rag = self._session_config.get("num_scenes_for_rag", 3)
+                    
+                    context_text = self._context_manager.get_recent_context(
+                        num_scenes_context=num_context,
+                        num_scenes_rag=num_rag,
+                    )
+                    
+                    if context_text:
+                        # Schedule the injection to run on the event loop
+                        asyncio.create_task(self.inject_context(context_text))
+                        logger.info("Scheduled context injection (%d chars) based on user prompt.", len(context_text))
+
         # -- Response lifecycle ------------------------------------------
         elif event_type == "response.created":
             logger.debug("Response generation started")
@@ -757,9 +782,9 @@ class VoiceSession:
 
     async def _mic_input_loop(self) -> None:
         """Capture audio from the default microphone, base64-encode, and send."""
-        if sd is None:
+        if sd is None or pyaudio is None:
             logger.warning(
-                "sounddevice unavailable (%s) – mic input disabled", _sd_import_error
+                "sounddevice or pyaudio unavailable – mic input disabled"
             )
             # Keep task alive so it can be cancelled cleanly.
             while self._connected:
@@ -770,10 +795,10 @@ class VoiceSession:
         audio_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
 
         # PyAudio configuration
-        import pyaudio
         p = pyaudio.PyAudio()
         
         def _mic_callback(in_data, frame_count, time_info, status_flags):
+            assert pyaudio is not None
             if status_flags:
                 logger.warning("Mic status: %s", status_flags)
             
@@ -800,6 +825,7 @@ class VoiceSession:
                 frames_per_buffer=CHUNK_SAMPLES,
                 stream_callback=_mic_callback
             )
+            assert self._input_stream is not None
             self._input_stream.start_stream()
             logger.debug("Microphone capture started (24 kHz mono PCM16)")
 
@@ -822,6 +848,7 @@ class VoiceSession:
         finally:
             if self._input_stream is not None:
                 try:
+                    assert self._input_stream is not None
                     self._input_stream.stop_stream()
                     self._input_stream.close()
                 except Exception:

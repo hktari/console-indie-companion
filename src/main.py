@@ -219,7 +219,11 @@ async def run_pipeline(args: argparse.Namespace) -> None:
 
     voice: Optional[VoiceSession] = None
     if not args.no_voice:
-        voice = VoiceSession(system_instructions=SYSTEM_INSTRUCTIONS, cost_tracker=cost_tracker)
+        voice = VoiceSession(
+            system_instructions=SYSTEM_INSTRUCTIONS, 
+            cost_tracker=cost_tracker,
+            context_manager=context_mgr
+        )
         logger.info("Voice session created")
 
     # -- 2. Start capture ------------------------------------------------
@@ -302,6 +306,9 @@ async def run_pipeline(args: argparse.Namespace) -> None:
                 scene.get("health_status", "?"),
             )
 
+            # Update context manager with the new scene first
+            context_mgr.update_scene(scene)
+
             # --- CRITICAL EVENT DETECTION (Diffing) ---
             if voice and voice.is_connected():
                 current_activity = scene.get("activity")
@@ -313,6 +320,8 @@ async def run_pipeline(args: argparse.Namespace) -> None:
                 # 1. Death Event
                 if current_activity == "died" and prev_activity != "died":
                     logger.info("CRITICAL EVENT: Player died detected! Triggering proactive response.")
+                    # Inject the context of the death scene, then trigger a response
+                    await context_mgr.flush_latest_to_voice(voice)
                     await voice.trigger_response(
                         "SYSTEM EVENT: The player just died! Give a very brief, empathetic or encouraging response (under 10 words). Don't give a solution yet."
                     )
@@ -320,29 +329,14 @@ async def run_pipeline(args: argparse.Namespace) -> None:
                 # 2. Low Health Event
                 elif current_health in ["low", "critical"] and prev_health not in ["low", "critical"]:
                     logger.info("CRITICAL EVENT: Low health detected! Triggering proactive response.")
+                    # Inject the context of the low health scene, then trigger a response
+                    await context_mgr.flush_latest_to_voice(voice)
                     await voice.trigger_response(
                         "SYSTEM EVENT: The player's health is critically low! Give a very brief, urgent warning (under 10 words)!"
                     )
                     
             previous_scene = scene
             # ------------------------------------------
-
-            # Fetch RAG context and attach to scene
-            rag_context = await asyncio.to_thread(fetch_rag_context, scene)
-            scene["rag_context"] = rag_context
-
-            # Update context manager
-            context_mgr.update_scene(scene)
-
-            # Flush to voice session
-            if voice and voice.is_connected():
-                try:
-                    await context_mgr.flush_to_voice(voice)
-                    logger.debug("Context injected into voice session")
-                except Exception:
-                    logger.exception("Failed to inject context into voice session")
-            elif voice and not voice.is_connected():
-                logger.warning("Voice session disconnected — VLM pipeline continues")
 
             # Wait before checking for next frame
             await asyncio.sleep(1)

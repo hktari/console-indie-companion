@@ -120,48 +120,88 @@ class ContextManager:
     # Pending context
     # ------------------------------------------------------------------
 
-    def get_pending_context(self) -> Optional[str]:
-        """Get formatted context for the latest unflushed scene.
-
-        Returns ``None`` if there are no new scenes since the last flush.
-        When multiple scenes have accumulated, only the most recent one is
-        used (older ones are implicitly flushed).
-        """
-        with self._lock:
-            if self._unflushed_count == 0 or not self._scenes:
-                return None
-            scene = self._scenes[-1]  # most recent
-
-        # RAG query happens outside the lock (may be slow / network I/O).
-        rag_text = self.get_rag_context(scene)
-        rag_results = [rag_text] if rag_text else []
-        return self.format_context_update(scene, rag_results)
-
-    # ------------------------------------------------------------------
-    # Flush to voice session
-    # ------------------------------------------------------------------
-
-    async def flush_to_voice(self, voice_session) -> bool:
-        """Inject pending context into the voice session.
+    def get_recent_context(self, num_scenes_context: int, num_scenes_rag: int) -> str:
+        """Get formatted context for recent scenes, including RAG results.
 
         Args:
-            voice_session: A ``VoiceSession`` instance with an async
-                ``inject_context(text)`` method.
+            num_scenes_context: How many recent scenes to include in the description.
+            num_scenes_rag: How many recent scenes to use for RAG queries.
 
         Returns:
-            ``True`` if context was injected, ``False`` if nothing pending.
+            A formatted context string, or an empty string if no scenes are available.
         """
-        context = self.get_pending_context()
-        if context is None:
-            return False
-
-        await voice_session.inject_context(context)
-
         with self._lock:
-            self._unflushed_count = 0
+            if not self._scenes:
+                return ""
+            
+            # Get scenes for context description
+            scenes_for_desc = list(self._scenes)[-num_scenes_context:]
+            
+            # Get scenes for RAG query
+            scenes_for_rag = list(self._scenes)[-num_scenes_rag:]
 
-        logger.debug("Flushed context to voice session (%d chars)", len(context))
-        return True
+        # --- RAG Queries (outside lock) ---
+        all_rag_results = set()
+        for scene in scenes_for_rag:
+            rag_text = self.get_rag_context(scene)
+            if rag_text:
+                all_rag_results.add(rag_text)
+        
+        # --- Formatting (outside lock) ---
+        if not scenes_for_desc:
+            return ""
+
+        # For multiple scenes, we'll just use the description of the latest one
+        # but note that multiple frames are being considered.
+        latest_scene = scenes_for_desc[-1]
+        
+        # Create a combined description for the context block
+        if len(scenes_for_desc) > 1:
+            description = f"Over the last {len(scenes_for_desc)} moments, the player has been {latest_scene.get('activity', 'exploring')}. The most recent view is: {latest_scene.get('description', 'No description available.')}"
+        else:
+            description = latest_scene.get('description', 'No description available.')
+
+
+        # Format the final update string
+        rag_context = "\n".join(sorted(list(all_rag_results))) if all_rag_results else "No additional context."
+        
+        return CONTEXT_UPDATE_TEMPLATE.format(
+            description=description,
+            location=latest_scene.get("location", "unknown"),
+            activity=latest_scene.get("activity", "unknown"),
+            enemies=latest_scene.get("enemies", "none"),
+            health_status=latest_scene.get("health_status", "unknown"),
+            ui_elements=latest_scene.get("ui_elements", "none"),
+            notable_items=latest_scene.get("notable_items", "none"),
+            rag_context=rag_context,
+        )
+
+    async def flush_latest_to_voice(self, voice_session) -> bool:
+        """Formats and injects only the most recent scene and its RAG results.
+
+        Used for critical events where immediate context is key.
+
+        Args:
+            voice_session: A ``VoiceSession`` instance.
+
+        Returns:
+            True if context was injected, False otherwise.
+        """
+        with self._lock:
+            if not self._scenes:
+                return False
+            scene = self._scenes[-1]
+
+        rag_text = self.get_rag_context(scene)
+        rag_results = [rag_text] if rag_text else []
+        
+        context = self.format_context_update(scene, rag_results)
+        
+        if context:
+            await voice_session.inject_context(context)
+            logger.debug("Flushed latest scene to voice session for critical event.")
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Helpers
