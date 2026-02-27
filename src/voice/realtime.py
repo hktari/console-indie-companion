@@ -357,33 +357,6 @@ class VoiceSession:
         # 3. Force the model to respond immediately
         await self._send_event({"type": "response.create"})
 
-    async def reload_config(self) -> None:
-        """Hot-reload configuration from files and send a session.update event."""
-        logger.info("Reloading configuration...")
-        self._load_config()
-        self._load_prompt()
-    
-        # Filter session_config to only include known valid API parameters
-        known_params = {
-            "voice",
-            "turn_detection",
-            "temperature",
-            "speed",
-            "output_latency_preference",
-        }
-        update_payload = { 
-            k: v for k, v in self._session_config.items() if k in known_params
-        }
-        update_payload["instructions"] = self.system_instructions
-
-        await self._send_event(
-            {
-                "type": "session.update",
-                "session": update_payload,
-            }
-        )
-        logger.info("Configuration reloaded and sent to API.")
-
     def _load_config(self) -> None:
         """Load session parameters from the JSON config file."""
         try:

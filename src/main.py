@@ -160,17 +160,11 @@ def fetch_rag_context(scene: dict) -> str:
 def setup_key_listener(voice_session: VoiceSession, loop: asyncio.AbstractEventLoop) -> None:
     """Setup and run a non-blocking keyboard listener."""
     def on_press(key):
-        try:
-            # Check for a specific key, e.g., F5 or 'r' for reload
-            if key == keyboard.Key.f5 or (hasattr(key, 'char') and key.char == 'r'):
-                logger.info("Reload key pressed! Triggering config reload.")
-                asyncio.run_coroutine_threadsafe(voice_session.reload_config(), loop)
-        except Exception as e:
-            logger.error(f"Error in key listener: {e}")
+        pass
 
     # The listener runs in its own thread, so it's non-blocking
     with keyboard.Listener(on_press=on_press) as listener:
-        logger.info("Key listener started. Press F5 or 'r' to reload config.")
+        logger.info("Key listener started.")
         listener.join()
 
 
