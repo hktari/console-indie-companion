@@ -2,8 +2,11 @@ import websockets, asyncio, os, base64, json
 from dotenv import load_dotenv
 load_dotenv()
 async def test():
+    api_key = os.environ.get('OPENAI_API_KEY')
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY not found in environment variables.")
     url = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview'
-    headers = {'Authorization': 'Bearer ' + os.environ.get('OPENAI_API_KEY'), 'OpenAI-Beta': 'realtime=v1'}
+    headers = {'Authorization': 'Bearer ' + api_key, 'OpenAI-Beta': 'realtime=v1'}
     async with websockets.connect(url, additional_headers=headers) as ws:
         await ws.recv()
         await ws.send(json.dumps({'type': 'session.update', 'session': {'modalities': ['audio', 'text'], 'voice': 'sage'}}))

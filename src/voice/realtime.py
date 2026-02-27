@@ -19,6 +19,8 @@ import os
 import sys
 import threading
 import time
+import urllib.request
+import urllib.error
 from typing import Optional, Any
 
 import numpy as np
@@ -675,7 +677,7 @@ class VoiceSession:
                 logger.info("User transcript: %s", transcript)
 
                 if self._context_manager:
-                    logger.debug("User spoke, injecting latest synthesized narrative...")
+                    logger.info("User spoke, injecting latest synthesized narrative...")
                     context_text = self._context_manager.get_current_narrative()
                     
                     if context_text:
@@ -936,8 +938,6 @@ async def _check_api_quota() -> None:
     try:
         # We use a simple models list request to verify auth
         # It's lightweight and fails if the key is invalid or quota is exceeded
-        import urllib.request
-        import json
         req = urllib.request.Request(
             "https://api.openai.com/v1/models",
             headers={"Authorization": f"Bearer {api_key}"}
