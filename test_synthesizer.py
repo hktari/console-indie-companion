@@ -54,7 +54,7 @@ def test_synthesis_in_isolation():
 
     # 2. Execution
     try:
-        synthesizer = ContextSynthesizer()
+        synthesizer = ContextSynthesizer(model="gpt-4.1-mini")
         narrative = synthesizer.synthesize(mock_scenes, mock_rag_context)
 
         # 3. Verification

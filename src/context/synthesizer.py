@@ -32,7 +32,8 @@ Combine these sources into a 2-3 sentence story that flows naturally. Focus on t
 class ContextSynthesizer:
     """Calls a fast LLM to synthesize a narrative from recent game context."""
 
-    def __init__(self, model: str = "gpt-4o-mini", api_key: Optional[str] = None) -> None:
+    # TODO: test reasoning and non-reasoning models. Weigh cost -performance tradeoff.
+    def __init__(self, model: str = "gpt-4.1-mini", api_key: Optional[str] = None) -> None:
         load_dotenv()
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not self.api_key:

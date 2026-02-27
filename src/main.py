@@ -310,7 +310,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     context_mgr = ContextManager()
     logger.info("Context manager loaded")
 
-    synthesizer = ContextSynthesizer()
+    synthesizer = ContextSynthesizer(model="gpt-4.1-mini")
     logger.info("Context synthesizer loaded")
 
     voice: Optional[VoiceSession] = None
