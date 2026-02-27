@@ -356,9 +356,29 @@ async def run_pipeline(args: argparse.Namespace) -> None:
             context_synthesis_loop(synthesizer, context_mgr)
         )
 
-        # Primary loop to keep running until a signal is received
-        while running:
-            await asyncio.sleep(1)
+        # Wait for the main pipeline to finish (e.g. duration limit)
+        # or for a stop signal to be received.
+        stop_event = asyncio.Event()
+        loop.add_signal_handler(signal.SIGINT, stop_event.set)
+        loop.add_signal_handler(signal.SIGTERM, stop_event.set)
+
+        # Create a task that completes when the stop event is set
+        stop_waiter = asyncio.create_task(stop_event.wait())
+
+        # Wait for either the main task to complete or the stop event
+        done, pending = await asyncio.wait(
+            [main_task, stop_waiter],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+
+        if stop_waiter in done:
+            logger.info("Stop signal received, initiating shutdown.")
+        else:
+            logger.info("Main task completed, initiating shutdown.")
+
+        # Cancel pending tasks
+        for task in pending:
+            task.cancel()
 
     except asyncio.CancelledError:
         logger.info("Main run_pipeline task cancelled.")
