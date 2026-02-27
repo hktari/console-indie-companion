@@ -296,7 +296,7 @@ class VoiceSession:
             logger.warning("Cannot inject context – not connected")
             return
 
-        logger.info("Injecting context (%d chars): %.100s…", len(context_text), context_text)
+        logger.info("Injecting context (%d chars): %s", len(context_text), context_text)
 
         await self._send_event(
             {
@@ -540,14 +540,9 @@ class VoiceSession:
                     "modalities": ["audio", "text"],
                     "instructions": self.system_instructions,
                     "voice": "sage",
-                    "input_audio_format": "pcm16",
-                    "output_audio_format": "pcm16",
                     "input_audio_transcription": {"model": "whisper-1"},
                     "turn_detection": {
-                        "type": "server_vad",
-                        "threshold": 0.5,
-                        "prefix_padding_ms": 300,
-                        "silence_duration_ms": 500
+                        "type": "semantic_vad"
                     },
                     "temperature": 0.7,
                     "tools": [
@@ -656,14 +651,14 @@ class VoiceSession:
             if fragment:
                 self._transcript_buffer.append(fragment)
                 # We still print to stdout for real-time feedback
-                print(fragment, end="", flush=True)
+                logger.debug(fragment)
 
         elif event_type == "response.audio_transcript.done":
             full_transcript = "".join(self._transcript_buffer).strip()
             if full_transcript:
                 logger.info(full_transcript)
             self._transcript_buffer.clear()
-            print()  # Newline for stdout
+            logger.debug("\n")  # Newline for stdout
             logger.info("Assistant response complete")
 
         # -- VAD / turn detection ----------------------------------------
@@ -990,23 +985,22 @@ async def _check_api_quota() -> None:
             logger.error(f"API Error [{error_code}]: {error_msg}")
             
             if error_code == "insufficient_quota":
-                print("\n❌ ERROR: Insufficient OpenAI API Quota")
-                print("Your API key is valid, but you have run out of credits or hit your billing limit.")
-                print("Please check your billing details at: https://platform.openai.com/account/billing")
+                logger.error("\n❌ ERROR: Insufficient OpenAI API Quota")
+                logger.error("Your API key is valid, but you have run out of credits or hit your billing limit.")
+                logger.error("Please check your billing details at: https://platform.openai.com/account/billing")
             elif e.code == 401:
-                print("\n❌ ERROR: Invalid OpenAI API Key")
-                print("Please ensure your OPENAI_API_KEY is correct.")
+                logger.error("\n❌ ERROR: Invalid OpenAI API Key")
+                logger.error("Please ensure your OPENAI_API_KEY is correct.")
             else:
-                print(f"\n❌ ERROR: API Check Failed ({e.code})")
-                print(f"Details: {error_msg}")
+                logger.error(f"\n❌ ERROR: API Check Failed ({e.code})")
+                logger.error(f"Details: {error_msg}")
         except Exception:
             logger.error(f"HTTP Error {e.code}: {e.reason}")
-            print(f"\n❌ ERROR: Pre-flight check failed (HTTP {e.code})")
+            logger.error(f"\n❌ ERROR: Pre-flight check failed (HTTP {e.code})")
             
         sys.exit(1)
     except Exception as e:
         logger.error(f"Failed to perform pre-flight check: {e}")
-        print(f"\n❌ ERROR: Could not connect to OpenAI API: {e}")
         sys.exit(1)
 
 async def _run_session(duration: int, instructions: str) -> None:
@@ -1017,16 +1011,16 @@ async def _run_session(duration: int, instructions: str) -> None:
 
     try:
         await session.start()
-        print("\n🎙️  Voice session active — speak into your microphone!")
-        print(f"   Duration : {duration}s")
-        print(f"   Model    : {MODEL}")
-        print("   Press Ctrl+C to stop early\n")
+        logger.info("\n🎙️  Voice session active — speak into your microphone!")
+        logger.info(f"   Duration : {duration}s")
+        logger.info(f"   Model    : {MODEL}")
+        logger.info("   Press Ctrl+C to stop early\n")
         await asyncio.sleep(duration)
     except KeyboardInterrupt:
-        print("\n\nInterrupted by user.")
+        logger.info("\n\nInterrupted by user.")
     finally:
         await session.stop()
-        print("Session ended.")
+        logger.info("Session ended.")
 
 
 def main() -> None:
@@ -1051,7 +1045,7 @@ def main() -> None:
     try:
         asyncio.run(_run_session(duration=args.duration, instructions=args.instructions))
     except KeyboardInterrupt:
-        print("\nGoodbye!")
+        logger.info("\nGoodbye!")
 
 
 if __name__ == "__main__":
