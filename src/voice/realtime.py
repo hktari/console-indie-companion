@@ -25,7 +25,6 @@ from typing import Optional, Any
 
 import numpy as np
 
-from src.utils.logging_config import setup_logging
 
 try:
     import sounddevice as sd
@@ -40,7 +39,6 @@ except ImportError:
 
 import websockets
 
-from src.logger import realtime_logger
 from src.prompts.tunic_companion import SYSTEM_INSTRUCTIONS
 from dotenv import load_dotenv
 
@@ -186,7 +184,17 @@ class VoiceSession:
             raise ConnectionError("Timeout waiting for session.created from API")
 
         # Configure the session (voice, VAD, audio format, instructions).
-        config_payload = self._session_config.copy()
+        # Filter session_config to only include known valid API parameters
+        known_params = {
+            "voice",
+            "turn_detection",
+            "temperature",
+            "speed",
+            "output_latency_preference",
+        }
+        config_payload = { 
+            k: v for k, v in self._session_config.items() if k in known_params
+        }
         config_payload["instructions"] = self.system_instructions
         config_payload["modalities"] = ["audio", "text"]
         config_payload["input_audio_format"] = "pcm16"
@@ -355,7 +363,17 @@ class VoiceSession:
         self._load_config()
         self._load_prompt()
     
-        update_payload = self._session_config.copy()
+        # Filter session_config to only include known valid API parameters
+        known_params = {
+            "voice",
+            "turn_detection",
+            "temperature",
+            "speed",
+            "output_latency_preference",
+        }
+        update_payload = { 
+            k: v for k, v in self._session_config.items() if k in known_params
+        }
         update_payload["instructions"] = self.system_instructions
 
         await self._send_event(
@@ -643,7 +661,7 @@ class VoiceSession:
         elif event_type == "response.audio_transcript.done":
             full_transcript = "".join(self._transcript_buffer).strip()
             if full_transcript:
-                realtime_logger.info(full_transcript)
+                logger.info(full_transcript)
             self._transcript_buffer.clear()
             print()  # Newline for stdout
             logger.info("Assistant response complete")
@@ -673,7 +691,7 @@ class VoiceSession:
         elif event_type == "conversation.item.input_audio_transcription.completed":
             transcript = event.get("transcript", "")
             if transcript:
-                realtime_logger.info(f"\n[You] {transcript}\n")
+                logger.info(f"\n[You] {transcript}\n")
                 logger.info("User transcript: %s", transcript)
 
                 if self._context_manager:
@@ -1027,16 +1045,8 @@ def main() -> None:
         default="",
         help="System instructions (default: TUNIC companion prompt)",
     )
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Set the logging level (default: INFO)",
-    )
     args = parser.parse_args()
 
-    # Logging
-    setup_logging(args.log_level)
 
     try:
         asyncio.run(_run_session(duration=args.duration, instructions=args.instructions))

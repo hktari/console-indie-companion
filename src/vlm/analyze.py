@@ -13,7 +13,8 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from src.logger import analysis_logger as logger
+
+logger = logging.getLogger(__name__)
 
 ANALYSIS_PROMPT = """\
 Analyze this screenshot from the game Tunic and return a JSON object with exactly these fields.

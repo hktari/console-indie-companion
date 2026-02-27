@@ -30,7 +30,9 @@ from src.capture.replay import ReplayCapture
 from src.vlm.analyze import SceneAnalyzer
 from src.voice.realtime import VoiceSession
 from src.utils import CostTracker
-from src.logger import main_logger as logger, analysis_logger
+from src.utils.logging_config import setup_logging
+logger = logging.getLogger(__name__)
+
 from src.prompts.tunic_companion import (
     CONTEXT_UPDATE_TEMPLATE,
     SYSTEM_INSTRUCTIONS,
@@ -256,7 +258,7 @@ async def main_pipeline(
             continue
 
         analysis_count += 1
-        analysis_logger.info(
+        logger.info(
             "[#%d] Scene: %s | Location: %s | Activity: %s | Health: %s",
             analysis_count,
             (scene.get("description") or "unknown")[:80],
@@ -412,6 +414,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
 def main() -> None:
     """CLI entry point."""
     args = parse_args()
+    setup_logging(args.log_level)
 
 
     # Suppress noisy library logs unless in DEBUG mode
