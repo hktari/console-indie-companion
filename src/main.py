@@ -335,6 +335,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
             system_instructions=SYSTEM_INSTRUCTIONS,
             cost_tracker=cost_tracker,
             context_manager=context_mgr,
+            synthesizer=synthesizer,
         )
         logger.info("Voice session created")
 

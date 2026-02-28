@@ -36,32 +36,8 @@ DEFAULT_SESSION_CONFIG = {
     "tools": [
         {
             "type": "function",
-            "name": "query_knowledge_base",
-            "description": "Query the Tunic knowledge base.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "search_query": {"type": "string"},
-                    "metadata_category": {
-                        "type": "string",
-                        "enum": [
-                            "location",
-                            "item",
-                            "creature",
-                            "secret",
-                            "mechanic",
-                            "general",
-                            "speedrun",
-                        ],
-                    },
-                },
-                "required": ["search_query"],
-            },
-        },
-        {
-            "type": "function",
             "name": "web_search",
-            "description": "Search the web for general information or game hints when the knowledge base is insufficient.",
+            "description": "Search the web for general information or game hints.",
             "parameters": {
                 "type": "object",
                 "properties": {

@@ -46,6 +46,7 @@ class VoiceSession:
         system_instructions: str = "",
         cost_tracker: Optional[Any] = None,
         context_manager: Optional[Any] = None,
+        synthesizer: Optional[Any] = None,
     ) -> None:
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         if not self.api_key:
@@ -53,6 +54,7 @@ class VoiceSession:
 
         self._cost_tracker = cost_tracker
         self._context_manager = context_manager
+        self._synthesizer = synthesizer
         self.session_config = DEFAULT_SESSION_CONFIG.copy()
 
         # Components
@@ -253,8 +255,42 @@ class VoiceSession:
         if name == "web_search":
             try:
                 args = json.loads(args_str)
-                search_query = args.get("query", "")
-                logger.info(f"Web search query: '{search_query}'")
+                original_query = args.get("query", "")
+                logger.info(f"Original web search query: '{original_query}'")
+
+                search_query = original_query
+                if self._synthesizer and self._context_manager:
+                    context = self._context_manager.get_current_narrative()
+
+                    prompt = (
+                        "You are an expert search query optimizer for the game 'Tunic'.\n"
+                        f"Current Game Context: {context}\n"
+                        f"User Query: {original_query}\n\n"
+                        "Task: Create a single, highly effective search query that combines "
+                        "the game name 'Tunic', the current context, and the user's intent. "
+                        "Respond ONLY with the optimized search query text."
+                    )
+
+                    try:
+                        import openai
+
+                        client = openai.AsyncOpenAI(api_key=self.api_key)
+                        response = await client.chat.completions.create(
+                            model="gpt-4.1-mini",
+                            messages=[{"role": "system", "content": prompt}],
+                            temperature=0.0,
+                            max_tokens=100,
+                        )
+                        if response.choices and response.choices[0].message.content:
+                            enhanced_query = (
+                                response.choices[0].message.content.strip().strip('"')
+                            )
+                            logger.info(f"Enhanced search query: '{enhanced_query}'")
+                            search_query = enhanced_query
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to enhance query with LLM: {e}. Using original."
+                        )
 
                 results = exa_search(query=search_query)
                 if results and results.get("results"):
@@ -303,7 +339,7 @@ class VoiceSession:
                 search_query = args.get("search_query", "")
                 category_filter = args.get("metadata_category")
 
-                logger.info(f"TAG query: '{search_query}' (filter: {category_filter})")
+                logger.info(f"RAG query: '{search_query}' (filter: {category_filter})")
 
                 results = query_tunic_knowledge(
                     question=search_query,
