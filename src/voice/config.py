@@ -1,3 +1,5 @@
+from src.prompts.tunic_companion import SYSTEM_INSTRUCTIONS
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -17,21 +19,39 @@ WS_URL = f"wss://api.openai.com/v1/realtime?model={MODEL}"
 
 # Official OpenAI Realtime API session configuration object
 DEFAULT_SESSION_CONFIG = {
-    "modalities": ["text", "audio"],
-    "instructions": "",  # To be filled at runtime
+    "modalities": ["audio"],
+    "instructions": SYSTEM_INSTRUCTIONS,
     "voice": "ballad",
+    "input_audio_noise_reduction": "near_field",
     "input_audio_format": "pcm16",
     "output_audio_format": "pcm16",
-    "input_audio_transcription": {
-        "model": "whisper-1"
-    },
     "turn_detection": {
         "type": "server_vad",
-        "threshold": 0.5,
+        "threshold": 0.2,
         "prefix_padding_ms": 300,
-        "silence_duration_ms": 500
+        "silence_duration_ms": 1000,
+        "create_response": False,
+        "interrupt_response": False,
     },
-    "tools": [],  # To be filled at runtime
+    "tools": [
+            {
+                "type": "function",
+                "name": "query_knowledge_base",
+                "description": "Query the Tunic knowledge base.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "search_query": {"type": "string"},
+                        "metadata_category": {
+                            "type": "string",
+                            "enum": ["location", "item", "creature", "secret", "mechanic", "general", "speedrun"]
+                        }
+                    },
+                    "required": ["search_query"]
+                }
+            }
+        ],
+    "tracing": "auto",
     "tool_choice": "auto",
     "temperature": 0.8,
     "max_response_output_tokens": "inf"

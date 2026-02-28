@@ -21,7 +21,6 @@ from src.voice.config import DEFAULT_SESSION_CONFIG, MODEL
 from src.voice.audio import AudioManager
 from src.voice.websocket import RealtimeWebSocket
 from src.voice.utils import check_api_quota
-from src.prompts.tunic_companion import SYSTEM_INSTRUCTIONS
 from src.utils.logging_config import setup_logging
 
 load_dotenv()
@@ -50,7 +49,6 @@ class VoiceSession:
         if not self.api_key:
             raise ValueError("OpenAI API key required.")
 
-        self.system_instructions = system_instructions or SYSTEM_INSTRUCTIONS
         self._cost_tracker = cost_tracker
         self._context_manager = context_manager
         self.session_config = DEFAULT_SESSION_CONFIG.copy()
@@ -91,25 +89,7 @@ class VoiceSession:
 
         # Configure session
         config_payload = self.session_config.copy()
-        config_payload["instructions"] = self.system_instructions
-        config_payload["tools"] = [
-            {
-                "type": "function",
-                "name": "query_knowledge_base",
-                "description": "Query the Tunic knowledge base.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "search_query": {"type": "string"},
-                        "metadata_category": {
-                            "type": "string",
-                            "enum": ["location", "item", "creature", "secret", "mechanic", "general", "speedrun"]
-                        }
-                    },
-                    "required": ["search_query"]
-                }
-            }
-        ]
+       
         
         await self._ws.send_event({"type": "session.update", "session": config_payload})
 
@@ -164,7 +144,8 @@ class VoiceSession:
             # Note: response.created doesn't always have the items list populated yet
             # We'll pick up the item_id from audio.delta
             pass
-
+        elif event_type == "session.updated":
+            logger.info("Session updated: %s", json.dumps(event, indent=2))
         elif event_type == "response.audio.delta":
             item_id = event.get("item_id")
             if item_id:
@@ -214,19 +195,28 @@ class VoiceSession:
                 
             self._audio.clear_playback()
 
+        elif event_type == "input_audio_buffer.speech_stopped":
+            # Handle end of speech
+            if self._context_manager:
+                context = self._context_manager.get_current_narrative()
+                if context:
+                    asyncio.create_task(self.inject_context(context))
+
         elif event_type == "response.done":
             # Clean up active item tracking
             self._active_item_id = None
             self._active_item_received_bytes = 0
 
+            if self._context_manager:
+                context = self._context_manager.get_current_narrative()
+                if context:
+                    asyncio.create_task(self.inject_context(context))
+
         elif event_type == "conversation.item.input_audio_transcription.completed":
             transcript = event.get("transcript", "")
             if transcript:
                 logger.info(f"[You] {transcript}")
-                if self._context_manager:
-                    context = self._context_manager.get_current_narrative()
-                    if context:
-                        asyncio.create_task(self.inject_context(context))
+                
 
         elif event_type == "response.function_call_arguments.done":
             asyncio.create_task(self._handle_tool_call(event))
