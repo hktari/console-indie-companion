@@ -27,16 +27,38 @@ DEFAULT_SESSION_CONFIG = {
     "input_audio_noise_reduction": {
         "type": "near_field",
     },
-    "input_audio_transcription": {
-        "model": "whisper-1",
-        "language": "en"
-    },
+    "input_audio_transcription": {"model": "whisper-1", "language": "en"},
     "turn_detection": {
         "type": "semantic_vad",
         "create_response": True,
-        "interrupt_response": True
+        "interrupt_response": True,
     },
-    "tools": [],
+    "tools": [
+        {
+            "type": "function",
+            "name": "query_knowledge_base",
+            "description": "Query the Tunic knowledge base.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "search_query": {"type": "string"},
+                    "metadata_category": {
+                        "type": "string",
+                        "enum": [
+                            "location",
+                            "item",
+                            "creature",
+                            "secret",
+                            "mechanic",
+                            "general",
+                            "speedrun",
+                        ],
+                    },
+                },
+                "required": ["search_query"],
+            },
+        }
+    ],
     "tool_choice": "auto",
     "tracing": "auto",
     "temperature": 0.8,

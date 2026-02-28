@@ -41,3 +41,8 @@ packages = ["src"]
 
 [tool.setuptools.package-dir]
 "" = "."
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.4",
+]

@@ -27,6 +27,7 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+
 class VoiceSession:
     """Bidirectional voice session with OpenAI's Realtime API.
 
@@ -70,9 +71,9 @@ class VoiceSession:
         """Callback for AudioManager when mic data is ready."""
         if self._ws.is_connected():
             b64 = base64.b64encode(pcm_bytes).decode("ascii")
-            asyncio.create_task(self._ws.send_event(
-                {"type": "input_audio_buffer.append", "audio": b64}
-            ))
+            asyncio.create_task(
+                self._ws.send_event({"type": "input_audio_buffer.append", "audio": b64})
+            )
 
     async def start(self) -> None:
         """Connect to the Realtime API and start audio I/O."""
@@ -83,20 +84,26 @@ class VoiceSession:
         raw = await asyncio.wait_for(self._ws.recv(), timeout=10)
         event = json.loads(raw)
         if event.get("type") == "session.created":
-            logger.info("Session created (id=%s)", event.get("session", {}).get("id", "?"))
+            logger.info(
+                "Session created (id=%s)", event.get("session", {}).get("id", "?")
+            )
         else:
             logger.warning("Expected session.created, got %s", event.get("type"))
 
         # Configure session
         config_payload = self.session_config.copy()
-       
-        
+
         await self._ws.send_event({"type": "session.update", "session": config_payload})
 
         self._audio.start_output()
         self._tasks = [
             asyncio.create_task(self._ws.receive_loop(), name="receive_loop"),
-            asyncio.create_task(self._audio.start_input(asyncio.get_running_loop(), self._ws.is_connected), name="mic_input"),
+            asyncio.create_task(
+                self._audio.start_input(
+                    asyncio.get_running_loop(), self._ws.is_connected
+                ),
+                name="mic_input",
+            ),
         ]
 
         self._session_start_time = time.time()
@@ -106,10 +113,12 @@ class VoiceSession:
     async def stop(self) -> None:
         """Gracefully stop the session."""
         logger.info("Stopping voice session …")
-        
+
         if self._cost_tracker and self._audio_session_start:
             duration = time.time() - self._audio_session_start
-            self._cost_tracker.log_call(service="openai", model=MODEL, duration_seconds=duration)
+            self._cost_tracker.log_call(
+                service="openai", model=MODEL, duration_seconds=duration
+            )
 
         for task in self._tasks:
             task.cancel()
@@ -125,40 +134,27 @@ class VoiceSession:
             return
 
         logger.info("Injecting context: %s", context_text)
-        await self._ws.send_event({
-            "type": "conversation.item.create",
-            "item": {
-                "type": "message",
-                "role": "system",
-                "content": [{"type": "input_text", "text": context_text}],
-            },
-        })
+        await self._ws.send_event(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": context_text}],
+                },
+            }
+        )
         self._conversation_context.append(context_text)
         await self._check_rotation()
 
     def _handle_server_event(self, event_type: str, event: dict) -> None:
         """Process incoming server events."""
-        if event_type == "response.created":
-            # Track the new response item
-            res = event.get("response", {})
-            # Note: response.created doesn't always have the items list populated yet
-            # We'll pick up the item_id from audio.delta
-            pass
-        elif event_type == "session.updated":
+        if event_type == "session.updated":
             logger.info("Session updated: %s", json.dumps(event, indent=2))
         elif event_type == "response.audio.delta":
-            item_id = event.get("item_id")
-            if item_id:
-                if item_id != self._active_item_id:
-                    self._active_item_id = item_id
-                    self._active_item_received_bytes = 0
-                
-                delta_b64 = event.get("delta", "")
-                if delta_b64:
-                    raw_audio = base64.b64decode(delta_b64)
-                    self._active_item_received_bytes += len(raw_audio)
-                    self._audio.enqueue_playback(raw_audio)
-
+            delta = event.get("delta", "")
+            if delta:
+                self._audio.enqueue_playback(base64.b64decode(delta))
         elif event_type == "response.audio_transcript.delta":
             fragment = event.get("delta", "")
             if fragment:
@@ -176,23 +172,31 @@ class VoiceSession:
                 # Calculate how much was actually played
                 buffered_bytes = self._audio.get_playback_buffer_size()
                 played_bytes = max(0, self._active_item_received_bytes - buffered_bytes)
-                
+
                 # Convert bytes to ms: 24kHz, 16-bit mono = 48000 bytes/sec
                 # ms = (bytes / 48000) * 1000 = bytes / 48
                 played_ms = played_bytes // 48
-                
-                logger.info("Interruption detected. Truncating item %s at %d ms", self._active_item_id, played_ms)
-                
-                asyncio.create_task(self._ws.send_event({
-                    "type": "conversation.item.truncate",
-                    "item_id": self._active_item_id,
-                    "content_index": 0,
-                    "audio_end_ms": played_ms
-                }))
+
+                logger.info(
+                    "Interruption detected. Truncating item %s at %d ms",
+                    self._active_item_id,
+                    played_ms,
+                )
+
+                asyncio.create_task(
+                    self._ws.send_event(
+                        {
+                            "type": "conversation.item.truncate",
+                            "item_id": self._active_item_id,
+                            "content_index": 0,
+                            "audio_end_ms": played_ms,
+                        }
+                    )
+                )
                 # Also cancel the current response if one is in progress
                 # TODO: test without canceling. VAD + item.truncate should be enough
                 # asyncio.create_task(self._ws.send_event({"type": "response.cancel"}))
-                
+
             self._audio.clear_playback()
 
         elif event_type == "input_audio_buffer.speech_stopped":
@@ -216,7 +220,6 @@ class VoiceSession:
             transcript = event.get("transcript", "")
             if transcript:
                 logger.info(f"[You] {transcript}")
-                
 
         elif event_type == "response.function_call_arguments.done":
             asyncio.create_task(self._handle_tool_call(event))
@@ -228,46 +231,52 @@ class VoiceSession:
                 error_data.get("message"),
                 error_data.get("type"),
                 error_data.get("code"),
-                event.get("event_id")
+                event.get("event_id"),
             )
 
     async def _handle_tool_call(self, event: dict) -> None:
+        logger.debug("Handling tool call: %s", event)
         call_id = event.get("call_id")
         name = event.get("name")
         args_str = event.get("arguments", "{}")
-        
+
         if name == "query_knowledge_base":
             try:
                 from src.rag.query import query_tunic_knowledge
+
                 args = json.loads(args_str)
                 results = query_tunic_knowledge(
                     question=args.get("search_query", ""),
                     category_filter=args.get("metadata_category"),
-                    n_results=3
+                    n_results=3,
                 )
                 response_text = "\n\n".join(results) if results else "No info found."
-                
-                await self._ws.send_event({
-                    "type": "conversation.item.create",
-                    "item": {
-                        "type": "function_call_output",
-                        "call_id": call_id,
-                        "output": response_text
+
+                await self._ws.send_event(
+                    {
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": response_text,
+                        },
                     }
-                })
+                )
                 await self._ws.send_event({"type": "response.create"})
             except Exception as e:
                 logger.error("Tool error: %s", e)
                 # Send error back to model so it's not stuck
                 try:
-                    await self._ws.send_event({
-                        "type": "conversation.item.create",
-                        "item": {
-                            "type": "function_call_output",
-                            "call_id": call_id,
-                            "output": f"Error executing tool {name}: {str(e)}"
+                    await self._ws.send_event(
+                        {
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "function_call_output",
+                                "call_id": call_id,
+                                "output": f"Error executing tool {name}: {str(e)}",
+                            },
                         }
-                    })
+                    )
                     await self._ws.send_event({"type": "response.create"})
                 except Exception as ws_err:
                     logger.error("Failed to send tool error back to WS: %s", ws_err)
@@ -281,6 +290,7 @@ class VoiceSession:
             await self.stop()
             await self.start()
 
+
 async def _run_session(duration: int, instructions: str) -> None:
     await check_api_quota()
     session = VoiceSession(system_instructions=instructions)
@@ -289,6 +299,7 @@ async def _run_session(duration: int, instructions: str) -> None:
         await asyncio.sleep(duration)
     finally:
         await session.stop()
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -301,6 +312,7 @@ def main() -> None:
         asyncio.run(_run_session(args.duration, args.instructions))
     except KeyboardInterrupt:
         pass
+
 
 if __name__ == "__main__":
     main()
