@@ -412,10 +412,14 @@ def main() -> None:
 
 
     # Suppress noisy library logs unless in DEBUG mode
-    log_level = args.log_level.upper()
-    if log_level != "DEBUG":
+    log_level_name = args.log_level.upper()
+    if log_level_name != "DEBUG":
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("google_genai").setLevel(logging.WARNING)
+        logging.getLogger("websockets.client").setLevel(logging.INFO)
+    elif log_level_name == "DEBUG":
+        # Even in DEBUG, websockets.client is extremely chatty with raw frames
+        logging.getLogger("websockets.client").setLevel(logging.INFO)
 
     # Environment
     load_dotenv()

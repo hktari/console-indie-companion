@@ -123,6 +123,11 @@ class AudioManager:
         finally:
             self.stop_input()
 
+    def get_playback_buffer_size(self) -> int:
+        """Return the current size of the playback buffer in bytes."""
+        with self._playback_lock:
+            return len(self._playback_buf)
+
     def enqueue_playback(self, pcm_bytes: bytes) -> None:
         """Add PCM bytes to the playback buffer."""
         with self._playback_lock:

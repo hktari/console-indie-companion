@@ -54,7 +54,9 @@ class RealtimeWebSocket:
             return
         try:
             await self._ws.send(json.dumps(event))
-            logger.debug("→ %s", event.get("type"))
+            event_type = event.get("type", "")
+            if event_type != "input_audio_buffer.append":
+                logger.debug("→ %s", event_type)
         except Exception:
             logger.error("Error sending %s", event.get("type"), exc_info=True)
             self._connected = False
@@ -73,7 +75,8 @@ class RealtimeWebSocket:
                     continue
                 
                 event_type = event.get("type", "")
-                logger.debug("← %s", event_type)
+                if event_type not in ["input_audio_buffer.append", "response.audio.delta", "response.audio_transcript.delta"]:
+                    logger.debug("← %s", event_type)
                 self.on_event(event_type, event)
                 
         except websockets.ConnectionClosed as exc:
