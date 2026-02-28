@@ -130,6 +130,7 @@ class AudioManager:
 
     def enqueue_playback(self, pcm_bytes: bytes) -> None:
         """Add PCM bytes to the playback buffer."""
+        logger.debug("Enqueueing %d bytes of audio", len(pcm_bytes))
         with self._playback_lock:
             self._playback_buf.extend(pcm_bytes)
 
