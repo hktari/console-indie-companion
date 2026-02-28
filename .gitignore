@@ -37,7 +37,10 @@ env/
 
 # Project specific
 .env
-.env.*
+.env.local
+.env.development
+.env.test
+.env.production
 data/screenshots/*.png
 data/screenshots/*.jpg
 data/wiki/*.json

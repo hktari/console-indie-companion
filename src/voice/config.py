@@ -57,7 +57,19 @@ DEFAULT_SESSION_CONFIG = {
                 },
                 "required": ["search_query"],
             },
-        }
+        },
+        {
+            "type": "function",
+            "name": "web_search",
+            "description": "Search the web for general information or game hints when the knowledge base is insufficient.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query."}
+                },
+                "required": ["query"],
+            },
+        },
     ],
     "tool_choice": "auto",
     "tracing": "auto",

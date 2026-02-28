@@ -22,6 +22,7 @@ from src.voice.audio import AudioManager
 from src.voice.websocket import RealtimeWebSocket
 from src.voice.utils import check_api_quota
 from src.utils.logging_config import setup_logging
+from src.tools.search import exa_search
 
 load_dotenv()
 
@@ -152,9 +153,18 @@ class VoiceSession:
         if event_type == "session.updated":
             logger.info("Session updated: %s", json.dumps(event, indent=2))
         elif event_type == "response.audio.delta":
-            delta = event.get("delta", "")
-            if delta:
-                self._audio.enqueue_playback(base64.b64decode(delta))
+            item_id = event.get("item_id")
+            if item_id:
+                if item_id != self._active_item_id:
+                    self._active_item_id = item_id
+                    self._active_item_received_bytes = 0
+
+                delta_b64 = event.get("delta", "")
+                if delta_b64:
+                    raw_audio = base64.b64decode(delta_b64)
+                    self._active_item_received_bytes += len(raw_audio)
+                    self._audio.enqueue_playback(raw_audio)
+
         elif event_type == "response.audio_transcript.delta":
             fragment = event.get("delta", "")
             if fragment:
@@ -240,7 +250,52 @@ class VoiceSession:
         name = event.get("name")
         args_str = event.get("arguments", "{}")
 
-        if name == "query_knowledge_base":
+        if name == "web_search":
+            try:
+                args = json.loads(args_str)
+                search_query = args.get("query", "")
+                logger.info(f"Web search query: '{search_query}'")
+
+                results = exa_search(query=search_query)
+                if results and results.get("results"):
+                    response_text = "\n\n".join(
+                        [
+                            f"Title: {r['title']}\nURL: {r['url']}\n\n{r.get('text', '')}"
+                            for r in results["results"]
+                        ]
+                    )
+                else:
+                    response_text = "No info found."
+
+                await self._ws.send_event(
+                    {
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": response_text,
+                        },
+                    }
+                )
+                await self._ws.send_event({"type": "response.create"})
+            except Exception as e:
+                logger.error("Tool error: %s", e)
+                try:
+                    await self._ws.send_event(
+                        {
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "function_call_output",
+                                "call_id": call_id,
+                                "output": f"Error executing tool {name}: {str(e)}",
+                            },
+                        }
+                    )
+                    await self._ws.send_event({"type": "response.create"})
+                except Exception as ws_err:
+                    logger.error("Failed to send tool error back to WS: %s", ws_err)
+
+        elif name == "query_knowledge_base":
             try:
                 from src.rag.query import query_tunic_knowledge
 
