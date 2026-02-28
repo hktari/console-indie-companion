@@ -12,13 +12,12 @@ logger = logging.getLogger(__name__)
 
 
 SYNTHESIS_PROMPT_TEMPLATE = """
-As the internal monologue of a helpful AI game companion, your task is to synthesize a brief, cohesive narrative of the player's recent actions and current situation. 
+Your task is to create a concise summary of the player's recent activity based on the provided data.
 
-Use the following data:
-1. A list of recent scene descriptions, in chronological order.
-2. Relevant information from the game's knowledge base.
-
-Combine these sources into a 2-3 sentence story that flows naturally. Focus on the player's activity, their immediate environment, and their current status (like health or items). Weave in the knowledge base context where it's relevant.
+- Use the list of recent scene descriptions and knowledge base information.
+- Create a 2-3 sentence summary of events.
+- Focus on facts: player actions, location, and status.
+- Do not use narrative, poetic, or interpretive language.
 
 **Recent Scenes:**
 {scenes_json}
@@ -26,7 +25,7 @@ Combine these sources into a 2-3 sentence story that flows naturally. Focus on t
 **Knowledge Base Context:**
 {rag_context}
 
-**Narrative:**
+**Summary:**
 """
 
 
@@ -60,6 +59,7 @@ class ContextSynthesizer:
                 rag_context=rag_context or "No additional information.",
             )
 
+            logger.debug(f"Synthesis prompt: {prompt}")
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "system", "content": prompt}],

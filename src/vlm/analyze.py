@@ -26,7 +26,7 @@ If you are not sure about a specific field, return null for that field.
 - "health_status": Player health if visible. Choose from: "full", "low", "critical", "not visible", or null.
 - "ui_elements": List of visible UI elements. Choose from: "health bar", "stamina bar", "magic bar", "potion flasks", "inventory", "map", "manual page", "dialogue box", "quick items", "boss health bar", or null.
 - "notable_items": A list of notable items, NPCs, or interactive elements visible. Choose from general categories like: "Bits", "Cards", "Equipment", "Fairy Souls", "Gear", "Instruction Booklet Sheets", "Keys", "Offerings", "Secret Treasures", "Single Use Items", "Hero's Grave", "Fox Spirit", "Save Shrine/Statue", "Golden Path door", or null.
-- "description": A 1-2 sentence natural language description of the scene.
+- "description": A concise, objective description of the visual elements in the scene. Focus on what is literally visible. Avoid poetic or interpretive language.
 
 Return ONLY the raw JSON object, without any markdown formatting, code blocks, or explanations.
 """
