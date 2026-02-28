@@ -386,10 +386,15 @@ async def run_pipeline(args: argparse.Namespace) -> None:
             [main_task, stop_waiter], return_when=asyncio.FIRST_COMPLETED
         )
 
-        if stop_waiter in done:
+        if main_task in done:
+            try:
+                # Check if the task raised an exception
+                main_task.result()
+                logger.info("Main task completed successfully, initiating shutdown.")
+            except Exception:
+                logger.exception("Main task failed with an exception.")
+        elif stop_waiter in done:
             logger.info("Stop signal received, initiating shutdown.")
-        else:
-            logger.info("Main task completed, initiating shutdown.")
 
         # Cancel pending tasks
         for task in pending:
