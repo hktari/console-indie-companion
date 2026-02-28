@@ -3,74 +3,29 @@
 Connects to OpenAI's Realtime API via WebSocket, handles bidirectional audio
 (mic input → API → speaker output), and supports injecting game context as
 system messages mid-conversation.
-
-Usage:
-    python -m src.voice.realtime --duration 30
-    python -m src.voice.realtime --instructions "You are a helpful guide."
 """
 
 import argparse
 import asyncio
 import base64
-import importlib
 import json
 import logging
 import os
 import sys
-import threading
 import time
-import urllib.request
-import urllib.error
 from typing import Optional, Any
 
-import numpy as np
-
-
-try:
-    import sounddevice as sd
-except (ImportError, OSError) as _sd_err:
-    sd = None
-    _sd_import_error = _sd_err
-
-try:
-    import pyaudio
-except ImportError:
-    pyaudio = None
-
-import websockets
-
-from src.prompts.tunic_companion import SYSTEM_INSTRUCTIONS
 from dotenv import load_dotenv
+
+from src.voice.config import DEFAULT_SESSION_CONFIG, MODEL
+from src.voice.audio import AudioManager
+from src.voice.websocket import RealtimeWebSocket
+from src.voice.utils import check_api_quota
+from src.prompts.tunic_companion import SYSTEM_INSTRUCTIONS
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-SAMPLE_RATE = 24_000  # 24 kHz required by OpenAI Realtime API
-CHANNELS = 1  # Mono
-CHUNK_DURATION_MS = 100  # ms per mic capture chunk
-CHUNK_SAMPLES = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)  # samples/chunk
-BYTES_PER_SAMPLE = 2  # PCM16 = 2 bytes per sample
-
-MODEL = "gpt-realtime-mini"
-WS_URL = f"wss://api.openai.com/v1/realtime?model={MODEL}"
-
-DEFAULT_INSTRUCTIONS = (
-    "You are a friendly and knowledgeable gaming companion for the game TUNIC. "
-    "You've beaten the game and love helping other players. Be casual and conversational. "
-    "When the player asks for help, give graduated hints - start vague, get more specific only if asked. "
-    "Keep responses concise - 1-2 sentences max since this is a voice conversation. "
-    "Respond ONLY in English, regardless of the language the player uses."
-)
-
-
-# ---------------------------------------------------------------------------
-# VoiceSession
-# ---------------------------------------------------------------------------
-
 
 class VoiceSession:
     """Bidirectional voice session with OpenAI's Realtime API.
@@ -90,936 +45,205 @@ class VoiceSession:
         cost_tracker: Optional[Any] = None,
         context_manager: Optional[Any] = None,
     ) -> None:
-        """Initialise with OpenAI API key and initial system instructions.
-
-        Args:
-            api_key: OpenAI API key. Falls back to ``OPENAI_API_KEY`` env var.
-            system_instructions: Initial instructions sent via ``session.update``.
-            cost_tracker: Optional CostTracker instance to log API usage.
-        """
-        load_dotenv()
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         if not self.api_key:
-            raise ValueError(
-                "OpenAI API key required. Set OPENAI_API_KEY env var or pass api_key."
-            )
+            raise ValueError("OpenAI API key required.")
 
-        self.system_instructions = system_instructions
+        self.system_instructions = system_instructions or SYSTEM_INSTRUCTIONS
         self._cost_tracker = cost_tracker
         self._context_manager = context_manager
-        self.config_path = os.path.join(os.path.dirname(__file__), "session_config.json")
-        self._session_config = {}
+        self.session_config = DEFAULT_SESSION_CONFIG.copy()
 
-        # Load initial config
-        self._load_config()
+        # Components
+        self._audio = AudioManager(on_audio_data=self._on_mic_data)
+        self._ws = RealtimeWebSocket(self.api_key, on_event=self._handle_server_event)
 
-        if not self.system_instructions:
-            self.system_instructions = SYSTEM_INSTRUCTIONS
-            logger.debug("Loaded default system instructions from tunic_companion.py")
-
-        self._cost_tracker = cost_tracker
-
-        # Connection state
-        self._ws: Optional[Any] = None
-        self._connected: bool = False
+        # State
         self._tasks: list[asyncio.Task] = []
-
-        # Audio output buffer (shared between asyncio receive loop and
-        # sounddevice output callback thread → protected by a lock).
-        self._playback_buf = bytearray()
-        self._playback_lock = threading.Lock()
-
-        # Sounddevice streams
-        self._input_stream: Optional[Any] = None
-        self._output_stream: Optional[object] = None
-
-        # Session rotation tracking
         self._session_start_time: Optional[float] = None
-        self._conversation_context: list[str] = []  # Recent context for rotation
-        
-        # Audio cost tracking
         self._audio_session_start: Optional[float] = None
-
-        # Transcript buffering
+        self._conversation_context: list[str] = []
         self._transcript_buffer: list[str] = []
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    def _on_mic_data(self, pcm_bytes: bytes) -> None:
+        """Callback for AudioManager when mic data is ready."""
+        if self._ws.is_connected():
+            b64 = base64.b64encode(pcm_bytes).decode("ascii")
+            asyncio.create_task(self._ws.send_event(
+                {"type": "input_audio_buffer.append", "audio": b64}
+            ))
 
     async def start(self) -> None:
-        """Connect to the Realtime API, configure the session, start audio I/O."""
+        """Connect to the Realtime API and start audio I/O."""
         logger.info("Connecting to OpenAI Realtime API (%s) …", MODEL)
+        await self._ws.connect()
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "OpenAI-Beta": "realtime=v1",
-        }
+        # Wait for session.created
+        raw = await asyncio.wait_for(self._ws.recv(), timeout=10)
+        event = json.loads(raw)
+        if event.get("type") == "session.created":
+            logger.info("Session created (id=%s)", event.get("session", {}).get("id", "?"))
+        else:
+            logger.warning("Expected session.created, got %s", event.get("type"))
 
-        try:
-            self._ws = await websockets.connect(
-                WS_URL,
-                additional_headers=headers,
-                max_size=2**24,  # 16 MiB – audio deltas can be large
-            )
-            self._connected = True
-            logger.info("WebSocket connected")
-        except Exception:
-            logger.exception("Failed to connect to Realtime API")
-            raise
-
-        # Wait for the mandatory ``session.created`` event.
-        assert self._ws is not None
-        try:
-            raw = await asyncio.wait_for(self._ws.recv(), timeout=10)
-            event = json.loads(raw)
-            if event.get("type") == "session.created":
-                sid = event.get("session", {}).get("id", "?")
-                logger.info("Session created (id=%s)", sid)
-            else:
-                logger.warning("Expected session.created, got %s", event.get("type"))
-        except asyncio.TimeoutError:
-            logger.error("Timeout waiting for session.created")
-            await self.stop()
-            raise ConnectionError("Timeout waiting for session.created from API")
-
-        # Configure the session (voice, VAD, audio format, instructions).
-        # Filter session_config to only include known valid API parameters
-        known_params = {
-            "voice",
-            "turn_detection",
-            "temperature",
-            "speed",
-            "output_latency_preference",
-        }
-        config_payload = { 
-            k: v for k, v in self._session_config.items() if k in known_params
-        }
+        # Configure session
+        config_payload = self.session_config.copy()
         config_payload["instructions"] = self.system_instructions
-        config_payload["modalities"] = ["audio", "text"]
-        config_payload["input_audio_format"] = "pcm16"
-        config_payload["output_audio_format"] = "pcm16"
-        config_payload["input_audio_transcription"] = {"model": "whisper-1"}
         config_payload["tools"] = [
             {
                 "type": "function",
                 "name": "query_knowledge_base",
-                "description": "Query the Tunic knowledge base to find information about items, locations, creatures, mechanics, or secrets.",
+                "description": "Query the Tunic knowledge base.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "search_query": {
-                            "type": "string",
-                            "description": "The specific question or keywords to search for."
-                        },
+                        "search_query": {"type": "string"},
                         "metadata_category": {
                             "type": "string",
-                            "enum": ["location", "item", "creature", "secret", "mechanic", "general", "speedrun"],
-                            "description": "Optional category to filter the search results. Only use if the search is highly specific to a category."
+                            "enum": ["location", "item", "creature", "secret", "mechanic", "general", "speedrun"]
                         }
                     },
                     "required": ["search_query"]
                 }
             }
         ]
-        config_payload["tool_choice"] = "auto"
+        
+        await self._ws.send_event({"type": "session.update", "session": config_payload})
 
-        await self._send_event(
-            {
-                "type": "session.update",
-                "session": config_payload,
-            }
-        )
-
-        # Start audio output stream *before* launching loops so playback is
-        # ready when the first audio delta arrives.
-        self._start_audio_output()
-
-        # Launch background tasks.
+        self._audio.start_output()
         self._tasks = [
-            asyncio.create_task(self._receive_loop(), name="receive_loop"),
-            asyncio.create_task(self._mic_input_loop(), name="mic_input"),
+            asyncio.create_task(self._ws.receive_loop(), name="receive_loop"),
+            asyncio.create_task(self._audio.start_input(asyncio.get_running_loop(), self._ws.is_connected), name="mic_input"),
         ]
 
-        # Initialize session rotation and cost tracking timer
         self._session_start_time = time.time()
-        if self._audio_session_start is None:
-            self._audio_session_start = time.time()
-
-        logger.info("Voice session started – speak into your microphone")
+        self._audio_session_start = time.time()
+        logger.info("Voice session started")
 
     async def stop(self) -> None:
-        """Gracefully close the WebSocket connection and stop audio."""
+        """Gracefully stop the session."""
         logger.info("Stopping voice session …")
-        self._connected = False
         
-        # Log cost if tracker available
         if self._cost_tracker and self._audio_session_start:
             duration = time.time() - self._audio_session_start
-            self._cost_tracker.log_call(
-                service="openai",
-                model=MODEL,
-                duration_seconds=duration
-            )
-            self._audio_session_start = None
+            self._cost_tracker.log_call(service="openai", model=MODEL, duration_seconds=duration)
 
         for task in self._tasks:
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
         self._tasks.clear()
 
-        self._stop_audio()
-
-        if self._ws is not None:
-            try:
-                await self._ws.close()
-            except Exception:
-                logger.debug("Error closing WebSocket (ignored)", exc_info=True)
-            self._ws = None
-
+        self._audio.stop_all()
+        await self._ws.disconnect()
         logger.info("Voice session stopped")
 
     async def inject_context(self, context_text: str) -> None:
-        """Inject a game context update as a system message.
-
-        This is the integration point for the VLM scene descriptions: the
-        ContextManager calls this method to feed new information into the
-        ongoing conversation.
-
-        Args:
-            context_text: Plain-text description of what's happening in the game.
-        """
-        if not self._connected:
-            logger.warning("Cannot inject context – not connected")
+        """Inject game context."""
+        if not self._ws.is_connected():
             return
 
-        logger.info("Injecting context (%d chars): %s", len(context_text), context_text)
-
-        await self._send_event(
-            {
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "message",
-                    "role": "system",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": context_text,
-                        }
-                    ],
-                },
-            }
-        )
-
-        # Store context for rotation summary
+        logger.info("Injecting context: %s", context_text)
+        await self._ws.send_event({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": context_text}],
+            },
+        })
         self._conversation_context.append(context_text)
-        if len(self._conversation_context) > 10:
-            self._conversation_context = self._conversation_context[-10:]
-
-        # Check if rotation is needed
         await self._check_rotation()
 
-    async def trigger_response(self, prompt: str) -> None:
-        """Force the API to generate a proactive response based on an urgent prompt.
-
-        Args:
-            prompt: The urgent system message to inject before forcing a response.
-        """
-        if not self._connected:
-            logger.warning("Cannot trigger response – not connected")
-            return
-
-        logger.info("Triggering proactive response: %s", prompt)
-
-        # 1. Optionally cancel any ongoing response to interrupt
-        await self._send_event({"type": "response.cancel"})
-
-        # 2. Inject the urgent system message
-        await self._send_event(
-            {
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "message",
-                    "role": "system",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": prompt,
-                        }
-                    ],
-                },
-            }
-        )
-
-        # 3. Force the model to respond immediately
-        await self._send_event({"type": "response.create"})
-
-    def _load_config(self) -> None:
-        """Load session parameters from the JSON config file."""
-        try:
-            with open(self.config_path, "r") as f:
-                self._session_config = json.load(f)
-                logger.debug("Loaded session config from %s", self.config_path)
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            logger.error("Could not load or parse %s: %s", self.config_path, e)
-
-    def _load_prompt(self) -> None:
-        """Load system instructions from the prompt text file."""
-        # Reload the prompt module to get updated SYSTEM_INSTRUCTIONS
-        try:
-            import src.prompts.tunic_companion as tunic_prompts
-            importlib.reload(tunic_prompts)
-            self.system_instructions = tunic_prompts.SYSTEM_INSTRUCTIONS
-            logger.debug("Reloaded SYSTEM_INSTRUCTIONS from tunic_companion.py")
-        except Exception as e:
-            logger.error("Failed to reload tunic_companion.py: %s", e)
-
-    def is_connected(self) -> bool:
-        """Return *True* if the WebSocket connection is alive."""
-        return self._connected and self._ws is not None
-
-    async def _check_rotation(self) -> None:
-        """Check if session needs rotation (55 min limit) and rotate if needed.
-
-        Rotation process:
-        1. Create a condensed summary of recent conversation context
-        2. Close the current WebSocket connection
-        3. Open a new WebSocket connection
-        4. Inject the condensed context as the initial system message
-
-        Handles rotation failures gracefully (retry once, then log and continue).
-        """
-        if self._session_start_time is None:
-            return
-
-        elapsed = time.time() - self._session_start_time
-        rotation_threshold = 55 * 60  # 55 minutes in seconds
-
-        if elapsed < rotation_threshold:
-            return
-
-        logger.info(
-            "Session rotation triggered (%.0f min elapsed, limit is 55 min)",
-            elapsed / 60,
-        )
-
-        # Create condensed context summary from recent conversation
-        context_summary = self._create_context_summary()
-
-        # Attempt rotation with one retry
-        for attempt in range(2):
-            try:
-                logger.info("Rotating session (attempt %d/2)...", attempt + 1)
-
-                # Close current connection
-                self._connected = False
-                if self._ws is not None:
-                    try:
-                        await self._ws.close()
-                    except Exception:
-                        logger.debug("Error closing WebSocket during rotation", exc_info=True)
-                    self._ws = None
-
-                # Cancel background tasks
-                for task in self._tasks:
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
-                self._tasks.clear()
-
-                # Stop audio
-                self._stop_audio()
-
-                # Brief pause before reconnecting
-                await asyncio.sleep(1)
-
-                # Reconnect with fresh session
-                await self._reconnect_with_context(context_summary)
-                logger.info("Session rotation completed successfully")
-                return
-
-            except Exception:
-                logger.exception("Session rotation attempt %d failed", attempt + 1)
-                if attempt == 1:
-                    logger.error("Session rotation failed after 2 attempts, continuing with current session")
-                    return
-                # Retry on first failure
-                await asyncio.sleep(2)
-
-    def _create_context_summary(self) -> str:
-        """Create a condensed summary of recent conversation context.
-
-        Returns:
-            A brief text summary of the conversation so far.
-        """
-        if not self._conversation_context:
-            return "(No prior context)"
-
-        # Keep last 3 context updates for summary
-        recent = self._conversation_context[-3:]
-        summary = "Recent context: " + " | ".join(recent)
-        return summary[:500]  # Limit to 500 chars
-
-    async def _reconnect_with_context(self, context_summary: str) -> None:
-        """Reconnect to the API and inject the context summary.
-
-        Args:
-            context_summary: Condensed context to inject as system message.
-        """
-        logger.info("Reconnecting to OpenAI Realtime API …")
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "OpenAI-Beta": "realtime=v1",
-        }
-
-        try:
-            self._ws = await websockets.connect(
-                WS_URL,
-                additional_headers=headers,
-                max_size=2**24,
-            )
-            self._connected = True
-            logger.info("WebSocket reconnected")
-        except Exception:
-            logger.exception("Failed to reconnect to Realtime API")
-            raise
-
-        # Wait for session.created
-        assert self._ws is not None
-        try:
-            raw = await asyncio.wait_for(self._ws.recv(), timeout=10)
-            event = json.loads(raw)
-            if event.get("type") == "session.created":
-                sid = event.get("session", {}).get("id", "?")
-                logger.info("Session created (id=%s)", sid)
-            else:
-                logger.warning("Expected session.created, got %s", event.get("type"))
-        except asyncio.TimeoutError:
-            logger.error("Timeout waiting for session.created after rotation")
-            await self.stop()
-            raise ConnectionError("Timeout waiting for session.created from API")
-
-        # Configure session with context summary
-        await self._send_event(
-            {
-                "type": "session.update",
-                "session": {
-                    "modalities": ["audio", "text"],
-                    "instructions": self.system_instructions,
-                    "voice": "sage",
-                    "input_audio_transcription": {"model": "whisper-1"},
-                    "turn_detection": {
-                        "type": "semantic_vad"
-                    },
-                    "temperature": 0.7,
-                    "tools": [
-                        {
-                            "type": "function",
-                            "name": "query_knowledge_base",
-                            "description": "Query the Tunic knowledge base to find information about items, locations, creatures, mechanics, or secrets.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "search_query": {
-                                        "type": "string",
-                                        "description": "The specific question or keywords to search for."
-                                    },
-                                    "metadata_category": {
-                                        "type": "string",
-                                        "enum": ["location", "item", "creature", "secret", "mechanic", "general", "speedrun"],
-                                        "description": "Optional category to filter the search results. Only use if the search is highly specific to a category."
-                                    }
-                                },
-                                "required": ["search_query"]
-                            }
-                        }
-                    ],
-                    "tool_choice": "auto",
-                },
-            }
-        )
-
-        # Inject context summary as system message
-        if context_summary:
-            await self.inject_context(context_summary)
-
-        # Restart audio and background tasks
-        self._start_audio_output()
-        self._session_start_time = time.time()  # Reset rotation timer
-        self._tasks = [
-            asyncio.create_task(self._receive_loop(), name="receive_loop"),
-            asyncio.create_task(self._mic_input_loop(), name="mic_input"),
-        ]
-        logger.info("Session rotation complete – voice session resumed")
-
-    # ------------------------------------------------------------------
-    # WebSocket helpers
-    # ------------------------------------------------------------------
-
-    async def _send_event(self, event: dict) -> None:
-        """Serialise *event* to JSON and send it over the WebSocket."""
-        if self._ws is None:
-            logger.warning("WebSocket not connected, cannot send event")
-            return
-        try:
-            await self._ws.send(json.dumps(event))
-            logger.debug("→ %s", event.get("type"))
-        except Exception:
-            logger.error("Error sending %s", event.get("type"), exc_info=True)
-            self._connected = False
-
-    # ------------------------------------------------------------------
-    # Receive loop & event dispatcher
-    # ------------------------------------------------------------------
-
-    async def _receive_loop(self) -> None:
-        """Read events from the WebSocket and dispatch them."""
-        assert self._ws is not None
-        try:
-            async for raw in self._ws:
-                try:
-                    event = json.loads(raw)
-                except json.JSONDecodeError:
-                    logger.warning("Non-JSON message received, skipping")
-                    continue
-                event_type = event.get("type", "")
-                logger.debug("← %s", event_type)
-                self._handle_server_event(event_type, event)
-        except websockets.ConnectionClosed as exc:
-            logger.warning("WebSocket closed: %s", exc)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Unexpected error in receive loop")
-        finally:
-            self._connected = False
-
     def _handle_server_event(self, event_type: str, event: dict) -> None:
-        """Process a single server event (runs on the asyncio thread)."""
-
-        # -- Session lifecycle -------------------------------------------
-        if event_type == "session.updated":
-            logger.debug("Session configuration updated")
-
-        # -- Audio output ------------------------------------------------
-        elif event_type == "response.audio.delta":
+        """Process incoming server events."""
+        if event_type == "response.audio.delta":
             delta = event.get("delta", "")
             if delta:
-                logger.debug("Received audio delta: %d bytes", len(delta))
-                pcm_bytes = base64.b64decode(delta)
-                self._enqueue_playback(pcm_bytes)
+                self._audio.enqueue_playback(base64.b64decode(delta))
 
-        elif event_type == "response.audio.done":
-            logger.debug("Audio response stream complete")
-
-        # -- Transcript (log assistant words as INFO) ---------------
         elif event_type == "response.audio_transcript.delta":
             fragment = event.get("delta", "")
             if fragment:
                 self._transcript_buffer.append(fragment)
-                # We still print to stdout for real-time feedback
-                logger.debug(fragment)
 
         elif event_type == "response.audio_transcript.done":
             full_transcript = "".join(self._transcript_buffer).strip()
             if full_transcript:
-                logger.info(full_transcript)
+                logger.info(f"Assistant: {full_transcript}")
             self._transcript_buffer.clear()
-            logger.debug("\n")  # Newline for stdout
-            logger.info("Assistant response complete")
 
-        # -- VAD / turn detection ----------------------------------------
         elif event_type == "input_audio_buffer.speech_started":
-            logger.debug("User speech started – clearing playback buffer")
-            self._clear_playback()
-            # If the user interrupts, we also want to stop the current response
-            # But the Realtime API handles this automatically with server_vad
+            self._audio.clear_playback()
 
-        elif event_type == "input_audio_buffer.speech_stopped":
-            logger.debug("User speech stopped")
-
-        elif event_type == "input_audio_buffer.committed":
-            logger.debug("Audio buffer committed by server VAD")
-
-        # -- Conversation items ------------------------------------------
-        elif event_type == "conversation.item.created":
-            item = event.get("item", {})
-            logger.debug(
-                "Item created: role=%s type=%s",
-                item.get("role"),
-                item.get("type"),
-            )
-            
         elif event_type == "conversation.item.input_audio_transcription.completed":
             transcript = event.get("transcript", "")
             if transcript:
-                logger.info(f"\n[You] {transcript}\n")
-                logger.info("User transcript: %s", transcript)
-
+                logger.info(f"[You] {transcript}")
                 if self._context_manager:
-                    logger.info("User spoke, injecting latest synthesized narrative...")
-                    context_text = self._context_manager.get_current_narrative()
-                    
-                    if context_text:
-                        # Schedule the injection to run on the event loop
-                        asyncio.create_task(self.inject_context(context_text))
-                        logger.info("Scheduled narrative injection (%d chars).", len(context_text))
+                    context = self._context_manager.get_current_narrative()
+                    if context:
+                        asyncio.create_task(self.inject_context(context))
 
-        # -- Response lifecycle ------------------------------------------
-        elif event_type == "response.created":
-            logger.debug("Response generation started")
-
-        elif event_type == "response.done":
-            usage = event.get("response", {}).get("usage", {})
-            if usage:
-                logger.debug(
-                    "Response done – tokens in=%s out=%s",
-                    usage.get("input_tokens", "?"),
-                    usage.get("output_tokens", "?"),
-                )
-
-        # -- Errors ------------------------------------------------------
-        elif event_type == "error":
-            err = event.get("error", {})
-            logger.error(
-                "API error [%s/%s]: %s",
-                err.get("type", "?"),
-                err.get("code", "?"),
-                err.get("message", "?"),
-            )
-            
-        # -- Function calling --------------------------------------------
         elif event_type == "response.function_call_arguments.done":
-            call_id = event.get("call_id")
-            name = event.get("name")
-            arguments_str = event.get("arguments", "{}")
-            
-            if name == "query_knowledge_base":
-                logger.info("Agent called tool: %s with args %s", name, arguments_str)
-                try:
-                    args = json.loads(arguments_str)
-                    search_query = args.get("search_query", "")
-                    category = args.get("metadata_category")
-                    
-                    # Need to lazily import to avoid circular dependency
-                    from src.rag.query import query_tunic_knowledge
-                    
-                    results = query_tunic_knowledge(
-                        question=search_query,
-                        category_filter=category,
-                        n_results=3
-                    )
-                    
-                    if results:
-                        response_text = "\n\n".join(results)
-                    else:
-                        response_text = "No relevant information found in the knowledge base."
-                        
-                    # Create tool response item
-                    tool_msg = {
-                        "type": "conversation.item.create",
-                        "item": {
-                            "type": "function_call_output",
-                            "call_id": call_id,
-                            "output": response_text
-                        }
-                    }
-                    asyncio.create_task(self._send_event(tool_msg))
-                    
-                    # Request generation of response based on tool output
-                    asyncio.create_task(self._send_event({
-                        "type": "response.create"
-                    }))
-                    
-                except Exception as e:
-                    logger.error("Error executing tool %s: %s", name, e, exc_info=True)
-                    # Send error back to agent
-                    asyncio.create_task(self._send_event({
-                        "type": "conversation.item.create",
-                        "item": {
-                            "type": "function_call_output",
-                            "call_id": call_id,
-                            "output": f"Error querying knowledge base: {e}"
-                        }
-                    }))
-                    asyncio.create_task(self._send_event({"type": "response.create"}))
+            asyncio.create_task(self._handle_tool_call(event))
 
-        # -- Rate limits -------------------------------------------------
-        elif event_type == "rate_limits.updated":
-            pass  # noisy, suppress
+        elif event_type == "error":
+            logger.error("API error: %s", event.get("error", {}).get("message"))
 
-        # -- Catch-all ---------------------------------------------------
-        else:
-            logger.debug("← %s (unhandled)", event_type)
-
-    # ------------------------------------------------------------------
-    # Audio input (microphone)
-    # ------------------------------------------------------------------
-
-    async def _mic_input_loop(self) -> None:
-        """Capture audio from the default microphone, base64-encode, and send."""
-        if sd is None or pyaudio is None:
-            logger.warning(
-                "sounddevice or pyaudio unavailable – mic input disabled"
-            )
-            # Keep task alive so it can be cancelled cleanly.
-            while self._connected:
-                await asyncio.sleep(1)
-            return
-
-        loop = asyncio.get_running_loop()
-        audio_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=50)
-
-        # PyAudio configuration
-        p = pyaudio.PyAudio()
+    async def _handle_tool_call(self, event: dict) -> None:
+        call_id = event.get("call_id")
+        name = event.get("name")
+        args_str = event.get("arguments", "{}")
         
-        def _mic_callback(in_data, frame_count, time_info, status_flags):
-            assert pyaudio is not None
-            if status_flags:
-                logger.warning("Mic status: %s", status_flags)
-            
-            # Apply input gain (e.g. 100x) and clip to [-32768, 32767]
-            # Since PyAudio provides raw bytes, we'll convert to numpy array to amplify
-            audio_data = np.frombuffer(in_data, dtype=np.int16)
-            # Use float32 for calculations to avoid overflow during multiplication
-            amplified = np.clip(audio_data.astype(np.float32) * 100.0, -32768, 32767)
-            pcm16 = amplified.astype(np.int16).tobytes()
-            
+        if name == "query_knowledge_base":
             try:
-                loop.call_soon_threadsafe(audio_q.put_nowait, pcm16)
-            except asyncio.QueueFull:
-                pass  # drop frame rather than block the audio thread
-            
-            return (None, pyaudio.paContinue)
-
-        try:
-            self._input_stream = p.open(
-                format=pyaudio.paInt16,
-                channels=CHANNELS,
-                rate=SAMPLE_RATE,
-                input=True,
-                frames_per_buffer=CHUNK_SAMPLES,
-                stream_callback=_mic_callback
-            )
-            assert self._input_stream is not None
-            self._input_stream.start_stream()
-            logger.debug("Microphone capture started (24 kHz mono PCM16)")
-
-            while self._connected:
-                try:
-                    pcm_bytes = await asyncio.wait_for(audio_q.get(), timeout=1.0)
-                except asyncio.TimeoutError:
-                    continue
-                b64 = base64.b64encode(pcm_bytes).decode("ascii")
-                await self._send_event(
-                    {"type": "input_audio_buffer.append", "audio": b64}
+                from src.rag.query import query_tunic_knowledge
+                args = json.loads(args_str)
+                results = query_tunic_knowledge(
+                    question=args.get("search_query", ""),
+                    category_filter=args.get("metadata_category"),
+                    n_results=3
                 )
+                response_text = "\n\n".join(results) if results else "No info found."
+                
+                await self._ws.send_event({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": response_text
+                    }
+                })
+                await self._ws.send_event({"type": "response.create"})
+            except Exception as e:
+                logger.error("Tool error: %s", e)
 
-        except OSError as exc:
-            logger.warning("Audio device error – continuing without mic: %s", exc)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Error in mic input loop")
-        finally:
-            if self._input_stream is not None:
-                try:
-                    assert self._input_stream is not None
-                    self._input_stream.stop_stream()
-                    self._input_stream.close()
-                except Exception:
-                    pass
-                self._input_stream = None
-
-    # ------------------------------------------------------------------
-    # Audio output (speakers / headphones)
-    # ------------------------------------------------------------------
-
-    def _start_audio_output(self) -> None:
-        """Open an ``sd.OutputStream`` whose callback drains ``_playback_buf``."""
-        if sd is None:
-            logger.warning("sounddevice unavailable – audio output disabled")
+    async def _check_rotation(self) -> None:
+        if not self._session_start_time:
             return
-
-        def _speaker_callback(
-            outdata: np.ndarray, frames: int, time_info: object, status: object
-        ) -> None:
-            if status:
-                logger.warning("Speaker status: %s", status)
-
-            need = frames * BYTES_PER_SAMPLE
-            with self._playback_lock:
-                available = len(self._playback_buf)
-                if available >= need:
-                    raw = bytes(self._playback_buf[:need])
-                    del self._playback_buf[:need]
-                elif available > 0:
-                    raw = bytes(self._playback_buf) + b"\x00" * (need - available)
-                    self._playback_buf.clear()
-                else:
-                    outdata.fill(0)
-                    return
-
-            # logger.debug("Playing back %d bytes (%d remaining in buffer)", len(raw), len(self._playback_buf))
-            samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32767.0
-            outdata[:, 0] = samples[:frames]
-
-        try:
-            self._output_stream = sd.OutputStream(
-                samplerate=SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype="float32",
-                blocksize=CHUNK_SAMPLES,
-                callback=_speaker_callback,
-            )
-            self._output_stream.start()
-            logger.debug("Audio output started (24 kHz mono)")
-        except OSError as exc:
-            logger.warning("Cannot open audio output – continuing without: %s", exc)
-
-    def _enqueue_playback(self, pcm_bytes: bytes) -> None:
-        """Append decoded PCM16 bytes to the playback buffer (thread-safe)."""
-        with self._playback_lock:
-            self._playback_buf.extend(pcm_bytes)
-
-    def _clear_playback(self) -> None:
-        """Clear the playback buffer (e.g. on user interruption)."""
-        with self._playback_lock:
-            self._playback_buf.clear()
-
-    def _stop_audio(self) -> None:
-        """Stop and close all sounddevice streams."""
-        for stream_attr in ("_input_stream", "_output_stream"):
-            stream = getattr(self, stream_attr, None)
-            if stream is not None:
-                try:
-                    stream.stop()
-                    stream.close()
-                except Exception:
-                    pass
-                setattr(self, stream_attr, None)
-
-        self._clear_playback()
-
-
-# ---------------------------------------------------------------------------
-# CLI entry-point
-# ---------------------------------------------------------------------------
-
-
-async def _check_api_quota() -> None:
-    """Perform a pre-flight check to ensure the OpenAI API key is valid and has quota."""
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        logger.error("OPENAI_API_KEY environment variable is not set.")
-        sys.exit(1)
-        
-    logger.info("Performing pre-flight API check...")
-    try:
-        # We use a simple models list request to verify auth
-        # It's lightweight and fails if the key is invalid or quota is exceeded
-        req = urllib.request.Request(
-            "https://api.openai.com/v1/models",
-            headers={"Authorization": f"Bearer {api_key}"}
-        )
-        with urllib.request.urlopen(req) as response:
-            if response.status == 200:
-                logger.info("API key is valid. Checking quota by initializing a minimal text completion...")
-        
-        # To truly check quota for a model, we try a minimal 1-token completion
-        req = urllib.request.Request(
-            "https://api.openai.com/v1/chat/completions",
-            data=json.dumps({
-                "model": "gpt-4o-mini", # Use a cheap model for the check
-                "messages": [{"role": "user", "content": "test"}],
-                "max_tokens": 1
-            }).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-        )
-        with urllib.request.urlopen(req) as response:
-            if response.status == 200:
-                logger.info("Pre-flight check passed! API quota is available.")
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8")
-        try:
-            error_json = json.loads(error_body)
-            error_msg = error_json.get("error", {}).get("message", e.reason)
-            error_code = error_json.get("error", {}).get("code", "unknown")
-            
-            logger.error(f"API Error [{error_code}]: {error_msg}")
-            
-            if error_code == "insufficient_quota":
-                logger.error("\n❌ ERROR: Insufficient OpenAI API Quota")
-                logger.error("Your API key is valid, but you have run out of credits or hit your billing limit.")
-                logger.error("Please check your billing details at: https://platform.openai.com/account/billing")
-            elif e.code == 401:
-                logger.error("\n❌ ERROR: Invalid OpenAI API Key")
-                logger.error("Please ensure your OPENAI_API_KEY is correct.")
-            else:
-                logger.error(f"\n❌ ERROR: API Check Failed ({e.code})")
-                logger.error(f"Details: {error_msg}")
-        except Exception:
-            logger.error(f"HTTP Error {e.code}: {e.reason}")
-            logger.error(f"\n❌ ERROR: Pre-flight check failed (HTTP {e.code})")
-            
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"Failed to perform pre-flight check: {e}")
-        sys.exit(1)
+        if time.time() - self._session_start_time > 55 * 60:
+            logger.info("Rotating session...")
+            # Simplified rotation logic for now
+            await self.stop()
+            await self.start()
 
 async def _run_session(duration: int, instructions: str) -> None:
-    """Run an interactive voice session for *duration* seconds."""
-    await _check_api_quota()
-    
+    await check_api_quota()
     session = VoiceSession(system_instructions=instructions)
-
     try:
         await session.start()
-        logger.info("\n🎙️  Voice session active — speak into your microphone!")
-        logger.info(f"   Duration : {duration}s")
-        logger.info(f"   Model    : {MODEL}")
-        logger.info("   Press Ctrl+C to stop early\n")
         await asyncio.sleep(duration)
-    except KeyboardInterrupt:
-        logger.info("\n\nInterrupted by user.")
     finally:
         await session.stop()
-        logger.info("Session ended.")
-
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="OpenAI Realtime API – interactive voice session",
-    )
-    parser.add_argument(
-        "--duration",
-        type=int,
-        default=60,
-        help="Session duration in seconds (default: 60)",
-    )
-    parser.add_argument(
-        "--instructions",
-        type=str,
-        default="",
-        help="System instructions (default: TUNIC companion prompt)",
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--duration", type=int, default=60)
+    parser.add_argument("--instructions", type=str, default="")
     args = parser.parse_args()
-
-
     try:
-        asyncio.run(_run_session(duration=args.duration, instructions=args.instructions))
+        asyncio.run(_run_session(args.duration, args.instructions))
     except KeyboardInterrupt:
-        logger.info("\nGoodbye!")
-
+        pass
 
 if __name__ == "__main__":
     main()
