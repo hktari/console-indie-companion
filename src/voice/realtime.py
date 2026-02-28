@@ -245,9 +245,14 @@ class VoiceSession:
                 from src.rag.query import query_tunic_knowledge
 
                 args = json.loads(args_str)
+                search_query = args.get("search_query", "")
+                category_filter = args.get("metadata_category")
+
+                logger.info(f"TAG query: '{search_query}' (filter: {category_filter})")
+
                 results = query_tunic_knowledge(
-                    question=args.get("search_query", ""),
-                    category_filter=args.get("metadata_category"),
+                    question=search_query,
+                    category_filter=category_filter,
                     n_results=3,
                 )
                 response_text = "\n\n".join(results) if results else "No info found."
