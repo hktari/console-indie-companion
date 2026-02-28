@@ -9,9 +9,10 @@ from src.voice.config import WS_URL
 
 logger = logging.getLogger(__name__)
 
+
 class RealtimeWebSocket:
     """Manages the WebSocket connection to the OpenAI Realtime API."""
-    
+
     def __init__(self, api_key: str, on_event: Callable[[str, dict], None]):
         self.api_key = api_key
         self.on_event = on_event
@@ -50,7 +51,9 @@ class RealtimeWebSocket:
     async def send_event(self, event: dict) -> None:
         """Serialize event to JSON and send it."""
         if self._ws is None or not self._connected:
-            logger.warning("WebSocket not connected, cannot send event: %s", event.get("type"))
+            logger.warning(
+                "WebSocket not connected, cannot send event: %s", event.get("type")
+            )
             return
         try:
             await self._ws.send(json.dumps(event))
@@ -65,7 +68,7 @@ class RealtimeWebSocket:
         """Read events from the WebSocket and dispatch them via on_event callback."""
         if self._ws is None:
             return
-            
+
         try:
             async for raw in self._ws:
                 try:
@@ -73,12 +76,16 @@ class RealtimeWebSocket:
                 except json.JSONDecodeError:
                     logger.warning("Non-JSON message received, skipping")
                     continue
-                
+
                 event_type = event.get("type", "")
-                if event_type not in ["input_audio_buffer.append", "response.audio.delta", "response.audio_transcript.delta"]:
+                if event_type not in [
+                    "input_audio_buffer.append",
+                    "response.audio.delta",
+                    "response.audio_transcript.delta",
+                ]:
                     logger.debug("← %s", event_type)
                 self.on_event(event_type, event)
-                
+
         except websockets.ConnectionClosed as exc:
             logger.warning("WebSocket closed: %s", exc)
         except asyncio.CancelledError:

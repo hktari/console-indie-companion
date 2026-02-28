@@ -20,7 +20,9 @@ logger = logging.getLogger(__name__)
 class ReplayCapture:
     """Replays pre-captured screenshots from a directory instead of capturing live."""
 
-    def __init__(self, screenshot_dir: str, interval: float = 3.0, jpeg_quality: int = 85):
+    def __init__(
+        self, screenshot_dir: str, interval: float = 3.0, jpeg_quality: int = 85
+    ):
         """Initialize replay from a directory of screenshots.
 
         Args:
@@ -58,7 +60,9 @@ class ReplayCapture:
                 if Path(filename).suffix.lower() in image_extensions:
                     files.append(filename)
         except Exception:
-            logger.exception("Failed to scan screenshot directory: %s", self.screenshot_dir)
+            logger.exception(
+                "Failed to scan screenshot directory: %s", self.screenshot_dir
+            )
             return False
 
         if not files:
@@ -67,7 +71,9 @@ class ReplayCapture:
 
         self._image_files = files
         self._current_index = 0
-        logger.info("Found %d image files in %s", len(self._image_files), self.screenshot_dir)
+        logger.info(
+            "Found %d image files in %s", len(self._image_files), self.screenshot_dir
+        )
         return True
 
     def capture_once(self) -> Optional[bytes]:

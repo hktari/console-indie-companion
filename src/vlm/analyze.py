@@ -34,7 +34,7 @@ Return ONLY the raw JSON object, without any markdown formatting, code blocks, o
 
 class SceneAnalyzer:
     """Analyzes Tunic game screenshots using Google Gemini VLM.
-    
+
     Supported models:
     - gemini-2.5-flash (default) — best quality, $0.30/$2.50 per 1M tokens
     - gemini-2.5-flash-lite — budget option, $0.10/$0.40 per 1M tokens
@@ -49,10 +49,10 @@ class SceneAnalyzer:
         cost_tracker: Optional[Any] = None,
     ):
         """Initialize with Gemini API key (from env if not provided).
-        
+
         Args:
             api_key: Gemini API key. Falls back to GEMINI_API_KEY env var.
-            model: Gemini model name. Supports 'gemini-2.5-flash' (default) 
+            model: Gemini model name. Supports 'gemini-2.5-flash' (default)
                    and 'gemini-2.5-flash-lite' (budget).
             cost_tracker: Optional CostTracker instance to log API usage.
         """
@@ -66,7 +66,9 @@ class SceneAnalyzer:
         self._model = model
         self._cost_tracker = cost_tracker
 
-    def analyze_screenshot(self, image_data: bytes, mime_type: str = "image/png") -> dict:
+    def analyze_screenshot(
+        self, image_data: bytes, mime_type: str = "image/png"
+    ) -> dict:
         """Analyze a game screenshot, return structured scene description.
 
         Args:
@@ -86,7 +88,9 @@ class SceneAnalyzer:
                         types.Content(
                             role="user",
                             parts=[
-                                types.Part.from_bytes(data=image_data, mime_type=mime_type),
+                                types.Part.from_bytes(
+                                    data=image_data, mime_type=mime_type
+                                ),
                                 types.Part.from_text(text=ANALYSIS_PROMPT),
                             ],
                         )
@@ -96,7 +100,7 @@ class SceneAnalyzer:
                     ),
                 )
                 duration_s = time.perf_counter() - t0
-                
+
                 # Log cost if tracker is available
                 if self._cost_tracker and response.usage_metadata:
                     self._cost_tracker.log_call(
@@ -106,7 +110,7 @@ class SceneAnalyzer:
                         output_tokens=response.usage_metadata.candidates_token_count,
                         duration_seconds=duration_s,
                     )
-                    
+
                 logger.info(
                     "VLM analysis (model=%s) took %.2fs, result: %s",
                     self._model,
@@ -214,24 +218,32 @@ def run_batch(manifest_path: str, output_path: str) -> None:
 
         if not image_path.exists():
             logger.warning("File not found, skipping: %s", image_path)
-            results.append({
-                "filename": filename,
-                "manifest": entry,
-                "analysis": {"error": f"File not found: {image_path}"},
-            })
+            results.append(
+                {
+                    "filename": filename,
+                    "manifest": entry,
+                    "analysis": {"error": f"File not found: {image_path}"},
+                }
+            )
             continue
 
         analysis = analyzer.analyze_file(str(image_path))
-        results.append({
-            "filename": filename,
-            "manifest": entry,
-            "analysis": analysis,
-        })
+        results.append(
+            {
+                "filename": filename,
+                "manifest": entry,
+                "analysis": analysis,
+            }
+        )
 
         if "error" not in analysis:
-            logger.info("  -> location=%s, activity=%s", analysis.get('location'), analysis.get('activity'))
+            logger.info(
+                "  -> location=%s, activity=%s",
+                analysis.get("location"),
+                analysis.get("activity"),
+            )
         else:
-            logger.error("  -> ERROR: %s", analysis.get('error'))
+            logger.error("  -> ERROR: %s", analysis.get("error"))
 
         # Small delay to avoid rate limiting
         if i < total:
@@ -252,13 +264,45 @@ def score_results(results: list[dict]) -> dict:
     # Mapping from manifest game_state to acceptable VLM activity/location keywords
     state_keywords = {
         "overworld_exploration": {
-            "activity": ["exploring", "exploration", "traversing", "walking", "running", "moving"],
-            "location": ["forest", "ruins", "cavern", "biome", "overworld", "garden", "beach",
-                         "swamp", "mountain", "cliff", "bridge", "path", "field", "shore",
-                         "graveyard", "cemetery", "town", "village", "waterfall"],
+            "activity": [
+                "exploring",
+                "exploration",
+                "traversing",
+                "walking",
+                "running",
+                "moving",
+            ],
+            "location": [
+                "forest",
+                "ruins",
+                "cavern",
+                "biome",
+                "overworld",
+                "garden",
+                "beach",
+                "swamp",
+                "mountain",
+                "cliff",
+                "bridge",
+                "path",
+                "field",
+                "shore",
+                "graveyard",
+                "cemetery",
+                "town",
+                "village",
+                "waterfall",
+            ],
         },
         "boss_fight": {
-            "activity": ["fighting", "combat", "battling", "attacking", "dodging", "boss"],
+            "activity": [
+                "fighting",
+                "combat",
+                "battling",
+                "attacking",
+                "dodging",
+                "boss",
+            ],
             "location": ["boss", "arena", "chamber", "lair"],
         },
         "puzzle_area": {
@@ -266,11 +310,25 @@ def score_results(results: list[dict]) -> dict:
             "location": ["puzzle", "chamber", "temple", "shrine"],
         },
         "npc_dialogue": {
-            "activity": ["dialogue", "talking", "conversation", "interacting", "shopping", "trading"],
+            "activity": [
+                "dialogue",
+                "talking",
+                "conversation",
+                "interacting",
+                "shopping",
+                "trading",
+            ],
             "location": ["village", "shop", "npc", "town", "merchant"],
         },
         "inventory_manual": {
-            "activity": ["menu", "inventory", "manual", "reading", "viewing", "browsing"],
+            "activity": [
+                "menu",
+                "inventory",
+                "manual",
+                "reading",
+                "viewing",
+                "browsing",
+            ],
             "location": ["menu", "manual", "inventory", "page"],
         },
         "map_screen": {
@@ -293,12 +351,14 @@ def score_results(results: list[dict]) -> dict:
         game_state = manifest.get("game_state", "")
 
         if "error" in analysis:
-            details.append({
-                "filename": result["filename"],
-                "expected_state": game_state,
-                "match": False,
-                "reason": f"Analysis error: {analysis['error']}",
-            })
+            details.append(
+                {
+                    "filename": result["filename"],
+                    "expected_state": game_state,
+                    "match": False,
+                    "reason": f"Analysis error: {analysis['error']}",
+                }
+            )
             total += 1
             continue
 
@@ -322,14 +382,22 @@ def score_results(results: list[dict]) -> dict:
             correct += 1
 
         total += 1
-        details.append({
-            "filename": result["filename"],
-            "expected_state": game_state,
-            "vlm_activity": vlm_activity,
-            "vlm_location": vlm_location,
-            "match": matched,
-            "reason": "activity" if activity_match else ("location" if location_match else ("description" if description_match else "no match")),
-        })
+        details.append(
+            {
+                "filename": result["filename"],
+                "expected_state": game_state,
+                "vlm_activity": vlm_activity,
+                "vlm_location": vlm_location,
+                "match": matched,
+                "reason": "activity"
+                if activity_match
+                else (
+                    "location"
+                    if location_match
+                    else ("description" if description_match else "no match")
+                ),
+            }
+        )
 
     accuracy = (correct / total * 100) if total > 0 else 0.0
 
@@ -342,10 +410,19 @@ def score_results(results: list[dict]) -> dict:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Tunic screenshot scene analysis via Gemini VLM")
+    parser = argparse.ArgumentParser(
+        description="Tunic screenshot scene analysis via Gemini VLM"
+    )
     parser.add_argument("--image", type=str, help="Path to a single image to analyze")
-    parser.add_argument("--batch", type=str, help="Path to manifest.json for batch analysis")
-    parser.add_argument("--output", type=str, default="results.json", help="Output path for batch results")
+    parser.add_argument(
+        "--batch", type=str, help="Path to manifest.json for batch analysis"
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="results.json",
+        help="Output path for batch results",
+    )
     parser.add_argument(
         "--log-level",
         default="INFO",
@@ -353,7 +430,6 @@ if __name__ == "__main__":
         help="Set the logging level (default: INFO)",
     )
     args = parser.parse_args()
-
 
     if args.image:
         run_single(args.image)

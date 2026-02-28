@@ -19,16 +19,17 @@ from src.voice.config import SAMPLE_RATE, CHANNELS, CHUNK_SAMPLES, BYTES_PER_SAM
 
 logger = logging.getLogger(__name__)
 
+
 class AudioManager:
     """Handles microphone input and speaker output streams."""
-    
+
     def __init__(self, on_audio_data: Optional[Callable[[bytes], None]] = None):
         self.on_audio_data = on_audio_data
-        
+
         # Audio output state
         self._playback_buf = bytearray()
         self._playback_lock = threading.Lock()
-        
+
         # Streams
         self._input_stream: Optional[Any] = None
         self._output_stream: Optional[Any] = None
@@ -76,29 +77,31 @@ class AudioManager:
         except OSError as exc:
             logger.warning("Cannot open audio output – continuing without: %s", exc)
 
-    async def start_input(self, loop: asyncio.AbstractEventLoop, connected_check: Callable[[], bool]) -> None:
+    async def start_input(
+        self, loop: asyncio.AbstractEventLoop, connected_check: Callable[[], bool]
+    ) -> None:
         """Start the microphone input loop."""
         if pyaudio is None:
             logger.warning("pyaudio unavailable – mic input disabled")
             return
 
         self._pa = pyaudio.PyAudio()
-        
+
         def _mic_callback(in_data, frame_count, time_info, status_flags):
             if status_flags:
                 logger.warning("Mic status: %s", status_flags)
-            
+
             # Apply input gain (100x) and clip
             audio_data = np.frombuffer(in_data, dtype=np.int16)
             amplified = np.clip(audio_data.astype(np.float32) * 100.0, -32768, 32767)
             pcm16 = amplified.astype(np.int16).tobytes()
-            
+
             if self.on_audio_data:
                 try:
                     loop.call_soon_threadsafe(self.on_audio_data, pcm16)
                 except Exception:
                     pass
-            
+
             return (None, 1 if pyaudio is None else pyaudio.paContinue)
 
         try:
@@ -109,7 +112,7 @@ class AudioManager:
                     rate=SAMPLE_RATE,
                     input=True,
                     frames_per_buffer=CHUNK_SAMPLES,
-                    stream_callback=_mic_callback
+                    stream_callback=_mic_callback,
                 )
                 if self._input_stream is not None:
                     self._input_stream.start_stream()

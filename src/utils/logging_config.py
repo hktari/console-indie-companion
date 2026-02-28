@@ -7,6 +7,7 @@ from typing import Union
 
 _active_log_file = None
 
+
 def setup_logging(log_level: Union[str, int] = "INFO") -> str:
     """
     Configures logging to both console and a timestamped file in var/logs.
@@ -27,7 +28,7 @@ def setup_logging(log_level: Union[str, int] = "INFO") -> str:
     project_root = Path(__file__).resolve().parent.parent.parent
     log_dir = project_root / "var" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Generate log filename with timestamp
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = log_dir / f"execution_{timestamp}.log"
@@ -35,7 +36,7 @@ def setup_logging(log_level: Union[str, int] = "INFO") -> str:
     # Configure logging with both StreamHandler (console) and FileHandler
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     date_format = "%Y-%m-%d %H:%M:%S"
-    
+
     # Use force=True in basicConfig to override any existing configuration
     # Note: force=True is available in Python 3.8+
     logging.basicConfig(
@@ -44,9 +45,9 @@ def setup_logging(log_level: Union[str, int] = "INFO") -> str:
         datefmt=date_format,
         handlers=[
             logging.StreamHandler(sys.stdout),
-            logging.FileHandler(log_file, encoding="utf-8")
+            logging.FileHandler(log_file, encoding="utf-8"),
         ],
-        force=True
+        force=True,
     )
 
     _active_log_file = str(log_file)

@@ -36,8 +36,9 @@ BOOKS = {
     "secrets": "secret",
     "faq": "general",
     "instruction-booklet": "mechanic",
-    "speedrunning": "speedrun"
+    "speedrunning": "speedrun",
 }
+
 
 def get_session():
     session = requests.Session()
@@ -47,19 +48,21 @@ def get_session():
         status_forcelist=[429, 500, 502, 503, 504],
     )
     adapter = HTTPAdapter(max_retries=retry)
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
     return session
+
 
 def clean_markdown(md_text: str) -> str:
     """Basic cleanup of markdown text (remove image links, messy tables)."""
     # Remove image links like [![alt](url)](url) or [![](url)](url)
-    md_text = re.sub(r'\[!\[.*?\]\([^)]+\)\]\([^)]+\)', '', md_text)
+    md_text = re.sub(r"\[!\[.*?\]\([^)]+\)\]\([^)]+\)", "", md_text)
     # Remove simple images ![](url)
-    md_text = re.sub(r'!\[.*?\]\([^)]+\)', '', md_text)
-    
+    md_text = re.sub(r"!\[.*?\]\([^)]+\)", "", md_text)
+
     # Try to convert HTML tables to simple text formats
     from bs4 import BeautifulSoup
+
     soup = BeautifulSoup(md_text, "html.parser")
     for table in soup.find_all("table"):
         table_text = []
@@ -72,113 +75,112 @@ def clean_markdown(md_text: str) -> str:
                     row_data.append(cell_text)
             if row_data:
                 table_text.append(" | ".join(row_data))
-        
+
         # Replace the table in the soup with the text representation
         if table_text:
             text_node = soup.new_string("\n" + "\n".join(table_text) + "\n")
             table.replace_with(text_node)
         else:
             table.decompose()
-            
+
     # Also strip any other stray HTML tags that bs4 finds
     md_text = soup.get_text(separator="\n")
-    
+
     # Clean up empty lines and trailing spaces
-    md_text = re.sub(r'\n\s*\n', '\n\n', md_text)
+    md_text = re.sub(r"\n\s*\n", "\n\n", md_text)
     return md_text.strip()
+
 
 def parse_book_markdown(md_text: str, book_slug: str, category: str) -> list[dict]:
     """Parse the giant markdown file into individual pages/sections."""
     pages = []
-    
+
     # BookStack markdown export concatenates pages with `# Page Title`
     # We split by `# ` (level 1 heading)
-    parts = re.split(r'^# ', md_text, flags=re.MULTILINE)
-    
+    parts = re.split(r"^# ", md_text, flags=re.MULTILINE)
+
     for part in parts:
         part = part.strip()
         if not part:
             continue
-            
-        lines = part.split('\n')
+
+        lines = part.split("\n")
         title = lines[0].strip()
-        content = '\n'.join(lines[1:]).strip()
-        
+        content = "\n".join(lines[1:]).strip()
+
         # Skip empty content or just the book title
         if not content or title.lower() == book_slug.lower():
             continue
-            
-        pages.append({
-            "title": title,
-            "url": f"{BASE_URL}/books/{book_slug}/page/{title.lower().replace(' ', '-')}",
-            "page_id": f"{book_slug}_{title.lower().replace(' ', '_')}",
-            "metadata": {
-                "category": category,
-                "book": book_slug
-            },
-            "sections": [
-                {
-                    "header": "Content",
-                    "content": clean_markdown(content)
-                }
-            ]
-        })
-        
+
+        pages.append(
+            {
+                "title": title,
+                "url": f"{BASE_URL}/books/{book_slug}/page/{title.lower().replace(' ', '-')}",
+                "page_id": f"{book_slug}_{title.lower().replace(' ', '_')}",
+                "metadata": {"category": category, "book": book_slug},
+                "sections": [{"header": "Content", "content": clean_markdown(content)}],
+            }
+        )
+
     return pages
+
 
 def scrape_book(book_slug: str, category: str, session: requests.Session) -> list[dict]:
     """Download a book's markdown export and parse it."""
     url = f"{BASE_URL}/books/{book_slug}/export/markdown"
     logger.info("Scraping book: %s from %s", book_slug, url)
-    
+
     try:
         response = session.get(url, timeout=30)
         response.raise_for_status()
-        
+
         md_text = response.text
         pages = parse_book_markdown(md_text, book_slug, category)
         logger.info("  ✓ Extracted %d pages from %s", len(pages), book_slug)
         return pages
-        
+
     except Exception as e:
         logger.error("  ✗ Error scraping book %s: %s", book_slug, e)
         return []
+
 
 def main():
     setup_logging("INFO")
     logger.info("=" * 60)
     logger.info("Tunic Wiki Scraper (tunic.wiki)")
     logger.info("=" * 60)
-    
+
     # Clear old Fandom wiki data
     if DATA_DIR.exists():
         import shutil
+
         logger.info("Clearing old Fandom wiki data...")
         shutil.rmtree(DATA_DIR)
-        
+
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    
+
     total_pages = 0
     session = get_session()
-    
+
     for book_slug, category in BOOKS.items():
         pages = scrape_book(book_slug, category, session)
-        
+
         for page in pages:
             # Save each page as a JSON file to match the expected format for index.py
-            filename = re.sub(r'[^\w\-_]', '_', page["page_id"])[:100]
+            filename = re.sub(r"[^\w\-_]", "_", page["page_id"])[:100]
             filepath = DATA_DIR / f"{filename}.json"
-            
-            with open(filepath, 'w', encoding='utf-8') as f:
+
+            with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(page, f, ensure_ascii=False, indent=2)
             total_pages += 1
-            
+
         time.sleep(DELAY_SECONDS)
-        
+
     logger.info("=" * 60)
     logger.info("Scraping complete! Saved %d pages.", total_pages)
     logger.info("Data saved to: %s", DATA_DIR)
     logger.info("=" * 60)
+
 
 if __name__ == "__main__":
     main()

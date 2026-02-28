@@ -31,6 +31,7 @@ from src.vlm.analyze import SceneAnalyzer
 from src.voice.realtime import VoiceSession
 from src.utils import CostTracker
 from src.utils.logging_config import setup_logging
+
 logger = logging.getLogger(__name__)
 
 from src.prompts.tunic_companion import (
@@ -46,7 +47,6 @@ try:
     from src.rag.query import query_tunic_knowledge
 except Exception:
     query_tunic_knowledge = None  # type: ignore[assignment]
-
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +71,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--interval",
         type=float,
-        default=0.0, # gemini-2.5-flash-lite has around 2s latency anyway
+        default=0.0,  # gemini-2.5-flash-lite has around 2s latency anyway
         help="Screenshot interval in seconds (default: 3).",
     )
     parser.add_argument(
@@ -157,8 +157,11 @@ def fetch_rag_context(scene: dict) -> str:
         return "(RAG query failed)"
 
 
-def setup_key_listener(voice_session: VoiceSession, loop: asyncio.AbstractEventLoop) -> None:
+def setup_key_listener(
+    voice_session: VoiceSession, loop: asyncio.AbstractEventLoop
+) -> None:
     """Setup and run a non-blocking keyboard listener."""
+
     def on_press(key):
         pass
 
@@ -180,22 +183,22 @@ async def context_synthesis_loop(
     num_scenes_for_synthesis: int = 10,
 ):
     """Periodically synthesizes a narrative from recent context."""
-    logger.info(
-        f"Starting context synthesis loop (running every {interval_seconds}s)"
-    )
+    logger.info(f"Starting context synthesis loop (running every {interval_seconds}s)")
     while True:
         try:
             await asyncio.sleep(interval_seconds)
-            
-            with context_mgr._lock: # type: ignore
+
+            with context_mgr._lock:  # type: ignore
                 scenes = list(context_mgr._scenes)[-num_scenes_for_synthesis:]
-            
+
             if not scenes:
                 continue
 
             rag_context = ""
             if query_tunic_knowledge:
-                rag_context = await asyncio.to_thread(context_mgr.get_rag_context, scenes[-1])
+                rag_context = await asyncio.to_thread(
+                    context_mgr.get_rag_context, scenes[-1]
+                )
 
             narrative = await asyncio.to_thread(
                 synthesizer.synthesize, scenes, rag_context
@@ -225,7 +228,7 @@ async def main_pipeline(
     last_frame: Optional[bytes] = None
     analysis_count = 0
 
-    while True: # Loop is broken by run_pipeline's signal handler
+    while True:  # Loop is broken by run_pipeline's signal handler
         if args.duration > 0:
             elapsed = asyncio.get_event_loop().time() - start_time
             if elapsed >= args.duration:
@@ -248,7 +251,10 @@ async def main_pipeline(
             continue
 
         if not scene or not isinstance(scene, dict) or "error" in scene:
-            logger.warning("VLM returned error/invalid: %s", scene.get("error") if isinstance(scene, dict) else "empty")
+            logger.warning(
+                "VLM returned error/invalid: %s",
+                scene.get("error") if isinstance(scene, dict) else "empty",
+            )
             continue
 
         analysis_count += 1
@@ -288,9 +294,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
         # Default to "PS Remote Play" if neither is provided
         window_name = args.window or ("PS Remote Play" if not args.window_id else None)
         capture = CaptureService(
-            window_id=args.window_id,
-            window_name=window_name,
-            interval=args.interval
+            window_id=args.window_id, window_name=window_name, interval=args.interval
         )
         if args.window_id:
             logger.info("Mode: LIVE capture of window ID %s", args.window_id)
@@ -312,9 +316,9 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     voice: Optional[VoiceSession] = None
     if not args.no_voice:
         voice = VoiceSession(
-            system_instructions=SYSTEM_INSTRUCTIONS, 
+            system_instructions=SYSTEM_INSTRUCTIONS,
             cost_tracker=cost_tracker,
-            context_manager=context_mgr
+            context_manager=context_mgr,
         )
         logger.info("Voice session created")
 
@@ -328,9 +332,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     if voice:
         # Start keybind listener in a separate thread
         key_listener_thread = threading.Thread(
-            target=setup_key_listener,
-            args=(voice, loop),
-            daemon=True
+            target=setup_key_listener, args=(voice, loop), daemon=True
         )
         key_listener_thread.start()
 
@@ -363,8 +365,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
 
         # Wait for either the main task to complete or the stop event
         done, pending = await asyncio.wait(
-            [main_task, stop_waiter],
-            return_when=asyncio.FIRST_COMPLETED
+            [main_task, stop_waiter], return_when=asyncio.FIRST_COMPLETED
         )
 
         if stop_waiter in done:
@@ -384,10 +385,9 @@ async def run_pipeline(args: argparse.Namespace) -> None:
             main_task.cancel()
         if synthesis_task:
             synthesis_task.cancel()
-        
+
         tasks = [t for t in [main_task, synthesis_task] if t is not None]
         await asyncio.gather(*tasks, return_exceptions=True)
-
 
     # -- 5. Cleanup -----------------------------------------------------
     capture.stop()
@@ -409,7 +409,6 @@ def main() -> None:
     """CLI entry point."""
     args = parse_args()
     setup_logging(args.log_level)
-
 
     # Suppress noisy library logs unless in DEBUG mode
     log_level_name = args.log_level.upper()

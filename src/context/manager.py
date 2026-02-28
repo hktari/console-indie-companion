@@ -33,7 +33,6 @@ class ContextManager:
         # For synthesized narrative
         self._current_narrative: str = "The player has just started their adventure."
 
-
     # ------------------------------------------------------------------
     # Scene buffer
     # ------------------------------------------------------------------
@@ -69,12 +68,13 @@ class ContextManager:
         Returns:
             Formatted RAG results string, or empty string on failure.
         """
+
         def _normalize_field(field):
             """Convert field to string, handling lists."""
             if isinstance(field, list):
                 return " ".join(str(x) for x in field if x)
             return str(field) if field else ""
-        
+
         parts = [
             _normalize_field(scene_description.get("location", "")),
             _normalize_field(scene_description.get("activity", "")),
@@ -107,7 +107,9 @@ class ContextManager:
         Returns:
             Formatted context string ready for injection.
         """
-        rag_context = "\n".join(rag_results) if rag_results else "No additional context."
+        rag_context = (
+            "\n".join(rag_results) if rag_results else "No additional context."
+        )
 
         return CONTEXT_UPDATE_TEMPLATE.format(
             description=scene_description.get("description", "unknown"),
@@ -123,7 +125,6 @@ class ContextManager:
     # ------------------------------------------------------------------
     # Pending context
     # ------------------------------------------------------------------
-
 
     # ------------------------------------------------------------------
     # Helpers

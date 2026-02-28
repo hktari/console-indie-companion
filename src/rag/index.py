@@ -33,29 +33,32 @@ CHUNK_OVERLAP = 50
 def load_wiki_pages() -> list[dict]:
     """Load all scraped wiki pages from JSON files."""
     pages = []
-    
+
     if not DATA_DIR.exists():
         raise FileNotFoundError(f"Wiki data directory not found: {DATA_DIR}")
-    
+
     json_files = list(DATA_DIR.glob("*.json"))
-    
+
     if not json_files:
         raise FileNotFoundError(f"No JSON files found in {DATA_DIR}")
-    
+
     for json_file in json_files:
-        with open(json_file, 'r', encoding='utf-8') as f:
+        with open(json_file, "r", encoding="utf-8") as f:
             pages.append(json.load(f))
-    
+
     return pages
 
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
+
+def chunk_text(
+    text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP
+) -> list[str]:
     """Chunk text using semantic markdown splitting."""
     if len(text) <= chunk_size:
         return [text]
-    
+
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=overlap,
@@ -63,101 +66,102 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
         length_function=len,
         is_separator_regex=False,
     )
-    
+
     return splitter.split_text(text)
 
 
-def create_chunks_from_pages(pages: list[dict]) -> tuple[list[str], list[dict], list[str]]:
+def create_chunks_from_pages(
+    pages: list[dict],
+) -> tuple[list[str], list[dict], list[str]]:
     """
     Create chunks from wiki pages with metadata.
-    
+
     Returns:
         tuple: (chunks, metadatas, ids)
     """
     all_chunks = []
     all_metadatas = []
     all_ids = []
-    
+
     chunk_id_counter = 0
-    
+
     for page in pages:
         page_title = page["title"]
         page_id = page["page_id"]
         page_url = page["url"]
-        
+
         for section in page["sections"]:
             section_header = section["header"]
             section_content = section["content"]
-            
+
             if not section_content.strip():
                 continue
-            
+
             chunks = chunk_text(section_content)
-            
+
             for i, chunk in enumerate(chunks):
                 all_chunks.append(chunk)
-                
+
                 # Base metadata
                 meta = {
                     "source_page": page_title,
                     "page_id": page_id,
                     "page_url": page_url,
                     "section_header": section_header,
-                    "chunk_index": i
+                    "chunk_index": i,
                 }
-                
+
                 # Add structured metadata if available
                 if "metadata" in page and isinstance(page["metadata"], dict):
                     for k, v in page["metadata"].items():
                         if isinstance(v, (str, int, float, bool)):
                             meta[k] = v
-                
+
                 all_metadatas.append(meta)
                 all_ids.append(f"chunk_{chunk_id_counter}")
                 chunk_id_counter += 1
-    
+
     return all_chunks, all_metadatas, all_ids
 
 
 def index_to_chromadb(chunks: list[str], metadatas: list[dict], ids: list[str]):
     """Index chunks into ChromaDB."""
-    
+
     CHROMA_DIR.mkdir(parents=True, exist_ok=True)
-    
+
     client = chromadb.PersistentClient(
-        path=str(CHROMA_DIR),
-        settings=Settings(anonymized_telemetry=False)
+        path=str(CHROMA_DIR), settings=Settings(anonymized_telemetry=False)
     )
-    
+
     try:
         client.delete_collection(name=COLLECTION_NAME)
         logger.info("Deleted existing collection: %s", COLLECTION_NAME)
     except:
         pass
-    
+
     collection = client.create_collection(
-        name=COLLECTION_NAME,
-        metadata={"description": "Tunic Wiki knowledge base"}
+        name=COLLECTION_NAME, metadata={"description": "Tunic Wiki knowledge base"}
     )
-    
+
     batch_size = 100
     total_batches = (len(chunks) + batch_size - 1) // batch_size
-    
+
     for i in range(0, len(chunks), batch_size):
-        batch_chunks = chunks[i:i+batch_size]
+        batch_chunks = chunks[i : i + batch_size]
         # Cast to Any to satisfy chromadb type hints which are strict about dict values
-        batch_metadatas: Any = metadatas[i:i+batch_size]
-        batch_ids = ids[i:i+batch_size]
-        
-        collection.add(
-            documents=batch_chunks,
-            metadatas=batch_metadatas,
-            ids=batch_ids
-        )
-        
+        batch_metadatas: Any = metadatas[i : i + batch_size]
+        batch_ids = ids[i : i + batch_size]
+
+        collection.add(documents=batch_chunks, metadatas=batch_metadatas, ids=batch_ids)
+
         batch_num = (i // batch_size) + 1
-        logger.info("  Indexed batch %d/%d (%d chunks)", batch_num, total_batches, len(batch_chunks))
-    
+        logger.info(
+            "  Indexed batch %d/%d (%d chunks)",
+            batch_num,
+            total_batches,
+            len(batch_chunks),
+        )
+
     return collection
 
 
@@ -165,23 +169,23 @@ def main():
     """Main indexer function."""
     # Setup basic logging for standalone execution
     setup_logging("INFO")
-    
+
     logger.info("=" * 60)
     logger.info("Tunic Wiki RAG Indexer")
     logger.info("=" * 60)
-    
+
     logger.info("1. Loading wiki pages...")
     pages = load_wiki_pages()
     logger.info("   Loaded %d pages", len(pages))
-    
+
     logger.info("2. Chunking content...")
     chunks, metadatas, ids = create_chunks_from_pages(pages)
     logger.info("   Created %d chunks", len(chunks))
-    
+
     logger.info("3. Indexing to ChromaDB...")
     collection = index_to_chromadb(chunks, metadatas, ids)
     logger.info("   ✓ Indexed to collection: %s", COLLECTION_NAME)
-    
+
     logger.info("=" * 60)
     logger.info("Indexing complete!")
     logger.info("  Pages: %d", len(pages))

@@ -137,7 +137,9 @@ def run_benchmark(
         },
         "timing": {
             "run_wall_time_s": t_run_end - t_run_start,
-            "throughput_fps": (len(metrics) / (t_run_end - t_run_start)) if metrics else 0.0,
+            "throughput_fps": (len(metrics) / (t_run_end - t_run_start))
+            if metrics
+            else 0.0,
             "latency_s": {
                 "mean": statistics.mean(latencies) if latencies else 0.0,
                 "p50": _percentile(latencies, 50),
@@ -179,12 +181,34 @@ def run_benchmark(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Benchmark Gemini VLM analysis throughput/cost on a screenshot set")
-    parser.add_argument("--screenshot-dir", default="data/screenshots/", help="Directory with PNG/JPG screenshots")
-    parser.add_argument("--model", default="gemini-2.5-flash-lite", choices=["gemini-2.5-flash", "gemini-2.5-flash-lite"])
-    parser.add_argument("--limit", type=int, default=0, help="Limit number of frames (0 = all)")
-    parser.add_argument("--sleep", type=float, default=0.0, help="Sleep between frames (seconds) to simulate capture interval")
-    parser.add_argument("--output", type=str, default="data/benchmarks/vlm_benchmark.json", help="Write JSON report to this path")
+    parser = argparse.ArgumentParser(
+        description="Benchmark Gemini VLM analysis throughput/cost on a screenshot set"
+    )
+    parser.add_argument(
+        "--screenshot-dir",
+        default="data/screenshots/",
+        help="Directory with PNG/JPG screenshots",
+    )
+    parser.add_argument(
+        "--model",
+        default="gemini-2.5-flash-lite",
+        choices=["gemini-2.5-flash", "gemini-2.5-flash-lite"],
+    )
+    parser.add_argument(
+        "--limit", type=int, default=0, help="Limit number of frames (0 = all)"
+    )
+    parser.add_argument(
+        "--sleep",
+        type=float,
+        default=0.0,
+        help="Sleep between frames (seconds) to simulate capture interval",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="data/benchmarks/vlm_benchmark.json",
+        help="Write JSON report to this path",
+    )
     parser.add_argument(
         "--log-level",
         default="INFO",
@@ -212,7 +236,9 @@ def main() -> None:
     print(f"Throughput: {timing['throughput_fps']:.3f} fps")
     print("Latency (s):", timing["latency_s"])
     print("Inter-frame (s):", timing["inter_frame_s"])
-    print(f"Estimated total cost: ${cost['total_cost']:.4f} (calls={cost['call_count']})")
+    print(
+        f"Estimated total cost: ${cost['total_cost']:.4f} (calls={cost['call_count']})"
+    )
     print(f"Report written to: {args.output}")
 
 

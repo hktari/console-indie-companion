@@ -37,7 +37,13 @@ class WindowGeometry:
 class CaptureService:
     """Captures screenshots of a specific window by ID using xdotool + mss."""
 
-    def __init__(self, window_id: Optional[str] = None, window_name: Optional[str] = None, interval: float = 3.0, jpeg_quality: int = 85):
+    def __init__(
+        self,
+        window_id: Optional[str] = None,
+        window_name: Optional[str] = None,
+        interval: float = 3.0,
+        jpeg_quality: int = 85,
+    ):
         """Initialize capture for a specific window.
 
         Args:
@@ -93,8 +99,12 @@ class CaptureService:
                             )
                             if xd_result.returncode == 0 and xd_result.stdout.strip():
                                 ids = xd_result.stdout.strip().split("\n")
-                                self.window_id = ids[0] # Usually the first one for PID search
-                                logger.debug("Found window ID %s via PID %s", self.window_id, pid)
+                                self.window_id = ids[
+                                    0
+                                ]  # Usually the first one for PID search
+                                logger.debug(
+                                    "Found window ID %s via PID %s", self.window_id, pid
+                                )
                                 if self.refresh_geometry():
                                     return True
         except Exception as e:

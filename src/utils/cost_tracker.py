@@ -8,15 +8,17 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-# Note: The logger from this module is no longer used, 
+# Note: The logger from this module is no longer used,
 # but we keep the import for now to avoid breaking other modules that might use it.
 import logging
+
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class APICall:
     """Record of a single API call."""
+
     service: str
     model: str
     input_tokens: int = 0
@@ -31,7 +33,7 @@ class CostTracker:
     - Gemini 2.5 Flash:      $0.30 input (text/image) / $2.50 output (stable, since ~Jun 2025)
     - Gemini 2.5 Flash-Lite:  $0.10 input / $0.40 output (budget variant for throughput-heavy tasks)
     - OpenAI Realtime:        $0.06 per minute of audio (approximate)
-    
+
     Note: Gemini batch mode can roughly halve costs (~$0.15 in / $1.25 out for 2.5 Flash).
     """
 
@@ -39,27 +41,27 @@ class CostTracker:
     COSTS = {
         "gemini": {
             "gemini-2.5-flash": {
-                "input_tokens": 0.30 / 1_000_000,   # $0.30 per 1M input
+                "input_tokens": 0.30 / 1_000_000,  # $0.30 per 1M input
                 "output_tokens": 2.50 / 1_000_000,  # $2.50 per 1M output
             },
             "gemini-2.5-flash-lite": {
-                "input_tokens": 0.10 / 1_000_000,   # $0.10 per 1M input
+                "input_tokens": 0.10 / 1_000_000,  # $0.10 per 1M input
                 "output_tokens": 0.40 / 1_000_000,  # $0.40 per 1M output
             },
         },
         "openai": {
             "gpt-realtime": {
-                "input_tokens": 32.00 / 1_000_000,    # $5.00 per 1M text tokens
+                "input_tokens": 32.00 / 1_000_000,  # $5.00 per 1M text tokens
                 "output_tokens": 64.00 / 1_000_000,  # $20.00 per 1M text tokens
-                "audio_input_tokens": 40.00 / 1_000_000, # $40.00 per 1M audio tokens
-                "audio_output_tokens": 80.00 / 1_000_000, # $80.00 per 1M audio tokens
+                "audio_input_tokens": 40.00 / 1_000_000,  # $40.00 per 1M audio tokens
+                "audio_output_tokens": 80.00 / 1_000_000,  # $80.00 per 1M audio tokens
                 "audio_minute": 0.06,  # Approx $0.06 per minute
             },
             "gpt-realtime-mini": {
-                "input_tokens": 0.60 / 1_000_000,    # $0.60 per 1M text tokens
-                "output_tokens": 2.40 / 1_000_000,   # $2.40 per 1M text tokens
-                "audio_input_tokens": 10.00 / 1_000_000, # $10.00 per 1M audio tokens
-                "audio_output_tokens": 20.00 / 1_000_000, # $20.00 per 1M audio tokens
+                "input_tokens": 0.60 / 1_000_000,  # $0.60 per 1M text tokens
+                "output_tokens": 2.40 / 1_000_000,  # $2.40 per 1M text tokens
+                "audio_input_tokens": 10.00 / 1_000_000,  # $10.00 per 1M audio tokens
+                "audio_output_tokens": 20.00 / 1_000_000,  # $20.00 per 1M audio tokens
                 "audio_minute": 0.02,  # Approx $0.02 per minute
             },
         },
@@ -79,7 +81,7 @@ class CostTracker:
         duration_seconds: float = 0.0,
     ) -> None:
         """Log an API call with metadata.
-        
+
         Args:
             service: Service name (e.g., 'gemini', 'openai')
             model: Model name (e.g., 'gemini-2.5-flash')
@@ -106,7 +108,7 @@ class CostTracker:
 
     def get_session_cost(self) -> dict:
         """Return cost breakdown by service.
-        
+
         Returns:
             Dict with structure:
             {
@@ -183,12 +185,12 @@ class CostTracker:
     def get_summary_string(self) -> str:
         """Return a formatted cost summary as a string."""
         cost_data = self.get_session_cost()
-        
+
         summary_lines = []
         summary_lines.append("\n" + "=" * 70)
         summary_lines.append("COST SUMMARY")
         summary_lines.append("=" * 70)
-        
+
         if cost_data["call_count"] == 0:
             summary_lines.append("No API calls logged.")
             summary_lines.append("=" * 70 + "\n")
@@ -202,17 +204,24 @@ class CostTracker:
             summary_lines.append(f"  {service.upper()}")
             summary_lines.append(f"    Calls: {service_data['calls']}")
             summary_lines.append(f"    Cost: ${service_data['cost']:.4f}")
-            
+
             for model, model_detail in service_data["details"].items():
                 summary_lines.append(f"      {model}")
                 summary_lines.append(f"        Calls: {model_detail['calls']}")
                 summary_lines.append(f"        Cost: ${model_detail['cost']:.4f}")
-                
-                if model_detail["input_tokens"] > 0 or model_detail["output_tokens"] > 0:
-                    summary_lines.append(f"        Tokens: {model_detail['input_tokens']} in, {model_detail['output_tokens']} out")
-                
+
+                if (
+                    model_detail["input_tokens"] > 0
+                    or model_detail["output_tokens"] > 0
+                ):
+                    summary_lines.append(
+                        f"        Tokens: {model_detail['input_tokens']} in, {model_detail['output_tokens']} out"
+                    )
+
                 if model_detail["duration_seconds"] > 0:
-                    summary_lines.append(f"        Duration: {model_detail['duration_seconds']:.1f}s")
+                    summary_lines.append(
+                        f"        Duration: {model_detail['duration_seconds']:.1f}s"
+                    )
             summary_lines.append("")
 
         summary_lines.append("=" * 70 + "\n")
@@ -220,10 +229,10 @@ class CostTracker:
 
     def _estimate_call_cost(self, call: APICall) -> float:
         """Estimate the cost of a single API call.
-        
+
         Args:
             call: APICall record
-            
+
         Returns:
             Estimated cost in USD
         """
