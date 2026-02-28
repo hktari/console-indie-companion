@@ -32,8 +32,6 @@ from src.voice.realtime import VoiceSession
 from src.utils import CostTracker
 from src.utils.logging_config import setup_logging
 
-logger = logging.getLogger(__name__)
-
 from src.prompts.tunic_companion import (
     CONTEXT_UPDATE_TEMPLATE,
     SYSTEM_INSTRUCTIONS,
@@ -41,12 +39,16 @@ from src.prompts.tunic_companion import (
 
 from src.context.manager import ContextManager
 from src.context.synthesizer import ContextSynthesizer
+from src.context.detectors import DeathDetector, SceneDetector
 
 # RAG may not be indexed yet — import but handle failures gracefully.
 try:
     from src.rag.query import query_tunic_knowledge
 except Exception:
     query_tunic_knowledge = None  # type: ignore[assignment]
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +223,7 @@ async def main_pipeline(
     context_mgr: ContextManager,
     cost_tracker: CostTracker,
     voice: Optional[VoiceSession] = None,
+    detectors: Optional[list[SceneDetector]] = None,
 ) -> None:
     """The main VLM analysis loop."""
     logger.info("Main pipeline running. Press Ctrl+C to stop.")
@@ -268,6 +271,15 @@ async def main_pipeline(
         )
 
         context_mgr.update_scene(scene)
+
+        # Run pluggable detectors
+        if detectors and voice:
+            for detector in detectors:
+                event = detector.detect(scene)
+                if event:
+                    logger.info("Detector triggered event: %s", event)
+                    await voice.inject_context(event)
+
         await asyncio.sleep(args.interval)
 
 
@@ -313,6 +325,10 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     synthesizer = ContextSynthesizer(model="gpt-4.1-mini")
     logger.info("Context synthesizer loaded")
 
+    # Initialise detectors
+    detectors: list[SceneDetector] = [DeathDetector()]
+    logger.info("Detectors initialised: %s", [type(d).__name__ for d in detectors])
+
     voice: Optional[VoiceSession] = None
     if not args.no_voice:
         voice = VoiceSession(
@@ -348,7 +364,9 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     synthesis_task = None
     try:
         main_task = asyncio.create_task(
-            main_pipeline(args, capture, vlm, context_mgr, cost_tracker, voice)
+            main_pipeline(
+                args, capture, vlm, context_mgr, cost_tracker, voice, detectors
+            )
         )
         synthesis_task = asyncio.create_task(
             context_synthesis_loop(synthesizer, context_mgr)
