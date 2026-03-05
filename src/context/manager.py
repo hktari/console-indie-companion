@@ -6,7 +6,7 @@ from collections import deque
 from typing import Optional
 
 from src.prompts.tunic_companion import CONTEXT_UPDATE_TEMPLATE
-from src.rag.query import query_tunic_knowledge
+from src.rag import KnowledgeOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -19,16 +19,22 @@ class ContextManager:
     thread reads via ``get_pending_context()`` / ``flush_to_voice()``.
     """
 
-    def __init__(self, max_history: int = 5) -> None:
+    def __init__(
+        self,
+        max_history: int = 5,
+        orchestrator: Optional[KnowledgeOrchestrator] = None,
+    ) -> None:
         """Initialize with rolling buffer size.
 
         Args:
             max_history: Maximum number of scene descriptions to retain.
+            orchestrator: Knowledge orchestrator for RAG retrieval (optional).
         """
         self._max_history = max_history
         self._scenes: deque[dict] = deque(maxlen=max_history)
         self._unflushed_count: int = 0
         self._lock = threading.Lock()
+        self._orchestrator = orchestrator
 
         # For synthesized narrative
         self._current_narrative: str = "The player has just started their adventure."
@@ -56,7 +62,7 @@ class ContextManager:
     # RAG integration
     # ------------------------------------------------------------------
 
-    def get_rag_context(self, scene_description: dict) -> str:
+    def get_rag_context(self, scene_description: dict, game_id: str = "tunic") -> str:
         """Query the RAG knowledge base based on the current scene.
 
         Builds a query from location + activity + notable_items and returns
@@ -64,10 +70,13 @@ class ContextManager:
 
         Args:
             scene_description: Scene dict from the VLM.
+            game_id: Game identifier for retrieval context.
 
         Returns:
             Formatted RAG results string, or empty string on failure.
         """
+        if not self._orchestrator:
+            return ""
 
         def _normalize_field(field):
             """Convert field to string, handling lists."""
@@ -85,8 +94,13 @@ class ContextManager:
             return ""
 
         try:
-            results = query_tunic_knowledge(query, n_results=3)
-            return "\n".join(results) if results else ""
+            results = self._orchestrator.resolve(query, game_id)
+            # Take top 3 results and format them
+            top_results = results[:3]
+            formatted = []
+            for r in top_results:
+                formatted.append(f"[{r.source}]\n{r.content}")
+            return "\n\n".join(formatted) if formatted else ""
         except Exception:
             logger.warning("RAG query failed for: %s", query, exc_info=True)
             return ""

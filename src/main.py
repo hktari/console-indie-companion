@@ -39,7 +39,9 @@ from src.prompts.tunic_companion import (
 
 from src.context.manager import ContextManager
 from src.context.synthesizer import ContextSynthesizer
-from src.context.detectors import DeathDetector, SceneDetector
+from src.detector.engine import DetectorEngine
+from src.detector.tunic_detectors import TunicDeathDetector, TunicHealthDetector
+from src.rag import ExaRetriever, KnowledgeOrchestrator, LocalGameRetriever
 
 # RAG may not be indexed yet — import but handle failures gracefully.
 try:
@@ -120,6 +122,10 @@ def parse_args() -> argparse.Namespace:
 def validate_env(need_voice: bool) -> None:
     """Ensure required API keys are present. Exits on failure."""
     missing: list[str] = []
+    if not os.environ.get("QMD_URL"):
+        logger.warning(
+            "QMD_URL not set. Fallback to CLI mode. Will be slow on CPU only (no GPU acceleration)."
+        )
     if not os.environ.get("GEMINI_API_KEY"):
         missing.append("GEMINI_API_KEY")
     if need_voice and not os.environ.get("OPENAI_API_KEY"):
@@ -222,14 +228,30 @@ async def main_pipeline(
     vlm: SceneAnalyzer,
     context_mgr: ContextManager,
     cost_tracker: CostTracker,
+    detector_engine: DetectorEngine,
     voice: Optional[VoiceSession] = None,
-    detectors: Optional[list[SceneDetector]] = None,
+    vlm_interval: float = 5.0,
 ) -> None:
-    """The main VLM analysis loop."""
+    """The main VLM analysis loop with dual-trigger scheduler.
+
+    VLM analysis runs on:
+    1. Periodic timer (every vlm_interval seconds, default 5s)
+    2. VAD speech trigger (via voice session callback)
+    """
     logger.info("Main pipeline running. Press Ctrl+C to stop.")
     start_time = asyncio.get_event_loop().time()
-    last_frame: Optional[bytes] = None
+    last_vlm_time = 0.0
     analysis_count = 0
+    vlm_trigger_requested = asyncio.Event()
+
+    # VAD trigger callback for voice session
+    def request_vlm_analysis() -> None:
+        """Request immediate VLM analysis (called on VAD speech start)."""
+        vlm_trigger_requested.set()
+
+    # Register VAD callback if voice is enabled
+    if voice:
+        voice._vlm_trigger_callback = request_vlm_analysis  # type: ignore
 
     while True:  # Loop is broken by run_pipeline's signal handler
         if args.duration > 0:
@@ -242,45 +264,73 @@ async def main_pipeline(
         if frame is None:
             await asyncio.sleep(0.5)
             continue
-        if frame == last_frame:
-            await asyncio.sleep(0.5)
-            continue
-        last_frame = frame
 
-        try:
-            scene = await asyncio.to_thread(vlm.analyze_screenshot, frame, "image/jpeg")
-        except Exception:
-            logger.exception("VLM analysis failed — skipping frame")
-            continue
+        current_time = asyncio.get_event_loop().time()
+        time_since_last_vlm = current_time - last_vlm_time
 
-        if not scene or not isinstance(scene, dict) or "error" in scene:
-            logger.warning(
-                "VLM returned error/invalid: %s",
-                scene.get("error") if isinstance(scene, dict) else "empty",
+        # Check if VLM analysis should run
+        should_run_vlm = False
+        trigger_reason = ""
+
+        # Trigger 1: Periodic timer
+        if time_since_last_vlm >= vlm_interval:
+            should_run_vlm = True
+            trigger_reason = "periodic"
+
+        # Trigger 2: VAD speech start
+        if vlm_trigger_requested.is_set():
+            should_run_vlm = True
+            trigger_reason = "vad-prompt"
+            vlm_trigger_requested.clear()
+
+        if should_run_vlm:
+            try:
+                scene = await asyncio.to_thread(
+                    vlm.analyze_screenshot, frame, "image/jpeg"
+                )
+            except Exception:
+                logger.exception("VLM analysis failed — skipping frame")
+                await asyncio.sleep(0.5)
+                continue
+
+            if not scene or not isinstance(scene, dict) or "error" in scene:
+                logger.warning(
+                    "VLM returned error/invalid: %s",
+                    scene.get("error") if isinstance(scene, dict) else "empty",
+                )
+                await asyncio.sleep(0.5)
+                continue
+
+            analysis_count += 1
+            last_vlm_time = current_time
+
+            logger.info(
+                "[#%d/%s] Scene: %s | Location: %s | Activity: %s | Health: %s",
+                analysis_count,
+                trigger_reason,
+                (scene.get("description") or "unknown")[:80],
+                scene.get("location", "?"),
+                scene.get("activity", "?"),
+                scene.get("health_status", "?"),
             )
-            continue
 
-        analysis_count += 1
-        logger.info(
-            "[#%d] Scene: %s | Location: %s | Activity: %s | Health: %s",
-            analysis_count,
-            (scene.get("description") or "unknown")[:80],
-            scene.get("location", "?"),
-            scene.get("activity", "?"),
-            scene.get("health_status", "?"),
-        )
+            context_mgr.update_scene(scene)
 
-        context_mgr.update_scene(scene)
+            # Run frame detectors on the raw frame
+            detector_events = await asyncio.to_thread(
+                detector_engine.process_frame, frame
+            )
+            if detector_events and voice:
+                for event in detector_events:
+                    event_msg = f"[SYSTEM EVENT] {event.type}: {event.data}"
+                    logger.info(
+                        "Detector event: %s (confidence: %.2f)",
+                        event.type,
+                        event.confidence,
+                    )
+                    await voice.inject_context(event_msg)
 
-        # Run pluggable detectors
-        if detectors and voice:
-            for detector in detectors:
-                event = detector.detect(scene)
-                if event:
-                    logger.info("Detector triggered event: %s", event)
-                    await voice.inject_context(event)
-
-        await asyncio.sleep(args.interval)
+        await asyncio.sleep(0.5)
 
 
 async def run_pipeline(args: argparse.Namespace) -> None:
@@ -319,15 +369,25 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     vlm = SceneAnalyzer(model=args.model, cost_tracker=cost_tracker)
     logger.info("VLM (Gemini) initialised")
 
-    context_mgr = ContextManager()
+    # Initialize RAG orchestrator
+    orchestrator = KnowledgeOrchestrator()
+    orchestrator.register_retriever(
+        LocalGameRetriever(qmd_url=os.environ.get("QMD_URL"))
+    )
+    orchestrator.register_retriever(ExaRetriever())
+    logger.info("RAG orchestrator initialised with local + Exa retrievers")
+
+    context_mgr = ContextManager(orchestrator=orchestrator)
     logger.info("Context manager loaded")
 
     synthesizer = ContextSynthesizer(model="gpt-4.1-mini")
     logger.info("Context synthesizer loaded")
 
-    # Initialise detectors
-    detectors: list[SceneDetector] = [DeathDetector()]
-    logger.info("Detectors initialised: %s", [type(d).__name__ for d in detectors])
+    # Initialize detector engine with OpenCV frame detectors
+    detector_engine = DetectorEngine(logger)
+    detector_engine.register_detector(TunicDeathDetector())
+    detector_engine.register_detector(TunicHealthDetector())
+    logger.info("Detector engine initialised with Tunic detectors")
 
     voice: Optional[VoiceSession] = None
     if not args.no_voice:
@@ -366,7 +426,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     try:
         main_task = asyncio.create_task(
             main_pipeline(
-                args, capture, vlm, context_mgr, cost_tracker, voice, detectors
+                args, capture, vlm, context_mgr, cost_tracker, detector_engine, voice
             )
         )
         synthesis_task = asyncio.create_task(

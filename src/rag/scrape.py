@@ -10,7 +10,6 @@ Usage:
 """
 
 import logging
-import json
 import re
 import time
 from pathlib import Path
@@ -163,16 +162,28 @@ def main():
     session = get_session()
 
     for book_slug, category in BOOKS.items():
-        pages = scrape_book(book_slug, category, session)
+        url = f"{BASE_URL}/books/{book_slug}/export/markdown"
+        logger.info("Scraping book: %s from %s", book_slug, url)
 
-        for page in pages:
-            # Save each page as a JSON file to match the expected format for index.py
-            filename = re.sub(r"[^\w\-_]", "_", page["page_id"])[:100]
-            filepath = DATA_DIR / f"{filename}.json"
+        try:
+            response = session.get(url, timeout=30)
+            response.raise_for_status()
+
+            md_text = clean_markdown(response.text)
+
+            # Save the entire book as a single markdown file
+            filename = f"{book_slug}.md"
+            filepath = DATA_DIR / filename
 
             with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(page, f, ensure_ascii=False, indent=2)
-            total_pages += 1
+                f.write(f"# {book_slug.capitalize()}\n\n")
+                f.write(md_text)
+
+            logger.info("  ✓ Saved %s", filename)
+            total_pages += 1  # Counting books as "pages" for simplicity in log
+
+        except Exception as e:
+            logger.error("  ✗ Error scraping book %s: %s", book_slug, e)
 
         time.sleep(DELAY_SECONDS)
 

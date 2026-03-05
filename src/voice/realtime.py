@@ -69,6 +69,7 @@ class VoiceSession:
         self._transcript_buffer: list[str] = []
         self._active_item_id: Optional[str] = None
         self._active_item_received_bytes: int = 0
+        self._vlm_trigger_callback: Optional[Any] = None
 
     def _on_mic_data(self, pcm_bytes: bytes) -> None:
         """Callback for AudioManager when mic data is ready."""
@@ -179,6 +180,13 @@ class VoiceSession:
             self._transcript_buffer.clear()
 
         elif event_type == "input_audio_buffer.speech_started":
+            # Trigger immediate VLM analysis on user speech start
+            if self._vlm_trigger_callback:
+                try:
+                    self._vlm_trigger_callback()
+                except Exception as e:
+                    logger.warning("VLM trigger callback failed: %s", e)
+
             # Handle interruption: truncate the current assistant item
             if self._active_item_id:
                 # Calculate how much was actually played

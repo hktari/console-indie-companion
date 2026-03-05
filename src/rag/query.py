@@ -2,27 +2,21 @@
 """
 RAG Query Interface for Tunic Wiki
 
-Query the ChromaDB collection to retrieve relevant wiki content.
+Query the QMD index to retrieve relevant wiki content.
 
 Usage:
     python -m src.rag.query "how to beat the garden knight"
 """
 
 import logging
+import os
 import sys
-from pathlib import Path
 from typing import Optional
 
-import chromadb
-from chromadb.config import Settings
-
+from src.rag.qmd_client import QmdCliClient, QmdHttpClient
 from src.utils.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
-
-
-CHROMA_DIR = Path(__file__).parent.parent.parent / "data" / "chroma"
-COLLECTION_NAME = "tunic_wiki"
 
 
 def query_tunic_knowledge(
@@ -33,58 +27,42 @@ def query_tunic_knowledge(
 
     Args:
         question: User's question about Tunic
-        category_filter: Optional metadata category to filter by (e.g., "location", "item")
+        category_filter: Optional metadata category to filter by (currently unused with QMD)
         n_results: Number of relevant chunks to return (default: 5)
 
     Returns:
         List of relevant text chunks
     """
-    if not CHROMA_DIR.exists():
-        raise FileNotFoundError(
-            f"ChromaDB directory not found: {CHROMA_DIR}\n"
-            f"Please run 'python -m src.rag.index' first."
-        )
+    # Use QMD HTTP client if URL is set, otherwise use CLI
+    qmd_url = os.environ.get("QMD_URL")
 
-    client = chromadb.PersistentClient(
-        path=str(CHROMA_DIR), settings=Settings(anonymized_telemetry=False)
-    )
+    if qmd_url:
+        client = QmdHttpClient(qmd_url)
+        logger.info("Using QMD HTTP client: %s", qmd_url)
+    else:
+        client = QmdCliClient(index_name="game-companion")
+        logger.info("Using QMD CLI client with index: game-companion")
 
     try:
-        collection = client.get_collection(name=COLLECTION_NAME)
+        logger.info("Querying QMD: '%s'", question)
+        results = client.query(question, game_id="tunic", limit=n_results)
     except Exception as e:
         raise RuntimeError(
-            f"Collection '{COLLECTION_NAME}' not found.\n"
-            f"Please run 'python -m src.rag.index' first.\n"
-            f"Error: {e}"
+            f"QMD query failed. Make sure QMD is installed and indexed.\nError: {e}"
         )
 
-    query_args = {"query_texts": [question], "n_results": n_results}
-
-    if category_filter:
-        query_args["where"] = {"category": category_filter}
-
-    logger.info("Querying ChromaDB: '%s' (filter: %s)", question, category_filter)
-    results = collection.query(**query_args)
-
-    documents = results.get("documents", [])
-    metadatas = results.get("metadatas", [])
-
-    if not documents or not metadatas:
+    if not results:
         return []
 
-    doc_list = documents[0]
-    meta_list = metadatas[0]
-
     formatted_results = []
-    for doc, meta in zip(doc_list, meta_list):
-        if meta is None:
-            continue
+    for r in results:
+        source_page = (
+            r.metadata.get("source_page") or r.metadata.get("source") or r.file
+        )
+        category = str(r.metadata.get("category", "general")).upper()
+        formatted_results.append(f"[{category} | {source_page}]\n{r.content}")
 
-        source_page = meta.get("source_page", "Unknown")
-        category = str(meta.get("category", "general")).upper()
-        formatted_results.append(f"[{category} | {source_page}]\n{doc}")
-
-    logger.debug("Found %d relevant passages:", len(formatted_results))
+    logger.debug("Found %d relevant passages", len(formatted_results))
     return formatted_results
 
 
