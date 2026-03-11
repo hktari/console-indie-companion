@@ -20,7 +20,7 @@ import os
 import signal
 import sys
 import threading
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from dotenv import load_dotenv
 from pynput import keyboard
@@ -28,19 +28,16 @@ from pynput import keyboard
 from src.capture.capture import CaptureService
 from src.capture.replay import ReplayCapture
 from src.vlm.analyze import SceneAnalyzer
+from src.voice.non_realtime import NonRealtimeVoiceSession
 from src.voice.realtime import VoiceSession
 from src.utils import CostTracker
 from src.utils.logging_config import setup_logging
 
-from src.prompts.tunic_companion import (
-    CONTEXT_UPDATE_TEMPLATE,
-    SYSTEM_INSTRUCTIONS,
-)
+from src.prompts.tunic_companion import SYSTEM_INSTRUCTIONS
 
 from src.context.manager import ContextManager
 from src.context.synthesizer import ContextSynthesizer
 from src.detector.engine import DetectorEngine
-from src.detector.tunic_detectors import TunicDeathDetector, TunicHealthDetector
 from src.rag import ExaRetriever, KnowledgeOrchestrator, LocalGameRetriever
 
 # RAG may not be indexed yet — import but handle failures gracefully.
@@ -98,6 +95,17 @@ def parse_args() -> argparse.Namespace:
         "--no-voice",
         action="store_true",
         help="Skip voice session (useful for testing VLM pipeline only).",
+    )
+    parser.add_argument(
+        "--voice-mode",
+        default="non-realtime",
+        choices=["non-realtime", "realtime"],
+        help="Voice interaction mode (default: non-realtime).",
+    )
+    parser.add_argument(
+        "--ptt-key",
+        default="ctrl",
+        help="Push-to-talk key for non-realtime mode (default: ctrl).",
     )
     parser.add_argument(
         "--model",
@@ -166,16 +174,60 @@ def fetch_rag_context(scene: dict) -> str:
 
 
 def setup_key_listener(
-    voice_session: VoiceSession, loop: asyncio.AbstractEventLoop
+    voice_session: Any, loop: asyncio.AbstractEventLoop, ptt_key: str
 ) -> None:
     """Setup and run a non-blocking keyboard listener."""
 
-    def on_press(key):
-        pass
+    target_key = ptt_key.lower()
+
+    def _key_matches(key: keyboard.Key | keyboard.KeyCode | None) -> bool:
+        if key is None:
+            return False
+        if isinstance(key, keyboard.KeyCode):
+            if key.char:
+                return key.char.lower() == target_key
+            return False
+        return getattr(key, "name", "").lower() == target_key
+
+    def on_press(key: keyboard.Key | keyboard.KeyCode | None) -> None:
+        if not _key_matches(key):
+            return
+
+        if (
+            hasattr(voice_session, "start_recording")
+            and not voice_session.is_recording()
+        ):
+            try:
+                voice_session.start_recording()
+            except Exception:
+                logger.exception("Failed to start push-to-talk recording")
+
+    def on_release(key: keyboard.Key | keyboard.KeyCode | None) -> None:
+        if not _key_matches(key):
+            return
+
+        if (
+            hasattr(voice_session, "stop_recording_and_respond")
+            and voice_session.is_recording()
+        ):
+            future = asyncio.run_coroutine_threadsafe(
+                voice_session.stop_recording_and_respond(),
+                loop,
+            )
+
+            def _done_callback(result_future):
+                try:
+                    reply = result_future.result()
+                    if reply:
+                        logger.info("Assistant: %s", reply)
+                except Exception:
+                    logger.exception("Push-to-talk response failed")
+
+            future.add_done_callback(_done_callback)
 
     # The listener runs in its own thread, so it's non-blocking
-    with keyboard.Listener(on_press=on_press) as listener:
-        logger.info("Key listener started.")
+    with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
+        logger.info("Key listener started for push-to-talk key '%s'.", ptt_key)
         listener.join()
 
 
@@ -229,7 +281,7 @@ async def main_pipeline(
     context_mgr: ContextManager,
     cost_tracker: CostTracker,
     detector_engine: DetectorEngine,
-    voice: Optional[VoiceSession] = None,
+    voice: Optional[Any] = None,
     vlm_interval: float = 5.0,
 ) -> None:
     """The main VLM analysis loop with dual-trigger scheduler.
@@ -249,8 +301,8 @@ async def main_pipeline(
         """Request immediate VLM analysis (called on VAD speech start)."""
         vlm_trigger_requested.set()
 
-    # Register VAD callback if voice is enabled
-    if voice:
+    # Register VAD callback only for realtime voice mode
+    if voice and hasattr(voice, "_vlm_trigger_callback"):
         voice._vlm_trigger_callback = request_vlm_analysis  # type: ignore
 
     while True:  # Loop is broken by run_pipeline's signal handler
@@ -385,19 +437,31 @@ async def run_pipeline(args: argparse.Namespace) -> None:
 
     # Initialize detector engine with OpenCV frame detectors
     detector_engine = DetectorEngine(logger)
-    detector_engine.register_detector(TunicDeathDetector())
-    detector_engine.register_detector(TunicHealthDetector())
+    # TODO: provide fullscreen screenshots and adjust logic to work with relative spacings, not absolute pixel positions
+    # detector_engine.register_detector(TunicDeathDetector())
+    # detector_engine.register_detector(TunicHealthDetector())
     logger.info("Detector engine initialised with Tunic detectors")
 
-    voice: Optional[VoiceSession] = None
+    voice: Optional[Any] = None
     if not args.no_voice:
-        voice = VoiceSession(
-            system_instructions=SYSTEM_INSTRUCTIONS,
-            cost_tracker=cost_tracker,
-            context_manager=context_mgr,
-            synthesizer=synthesizer,
-        )
-        logger.info("Voice session created")
+        if args.voice_mode == "realtime":
+            voice = VoiceSession(
+                system_instructions=SYSTEM_INSTRUCTIONS,
+                cost_tracker=cost_tracker,
+                context_manager=context_mgr,
+                synthesizer=synthesizer,
+            )
+            logger.info("Realtime voice session created")
+        else:
+            voice = NonRealtimeVoiceSession(
+                frame_provider=capture,
+                scene_analyzer=vlm,
+                context_manager=context_mgr,
+                orchestrator=orchestrator,
+                cost_tracker=cost_tracker,
+                system_instructions=SYSTEM_INSTRUCTIONS,
+            )
+            logger.info("Non-realtime voice session created")
 
     # -- 2. Start capture ------------------------------------------------
     if not capture.find_window():
@@ -409,16 +473,21 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     if voice:
         # Start keybind listener in a separate thread
         key_listener_thread = threading.Thread(
-            target=setup_key_listener, args=(voice, loop), daemon=True
+            target=setup_key_listener,
+            args=(voice, loop, args.ptt_key),
+            daemon=True,
         )
         key_listener_thread.start()
 
-        try:
-            await voice.start()
-            logger.info("Voice session connected")
-        except Exception:
-            logger.exception("Failed to start voice session — continuing without voice")
-            voice = None
+        if args.voice_mode == "realtime":
+            try:
+                await voice.start()
+                logger.info("Voice session connected")
+            except Exception:
+                logger.exception(
+                    "Failed to start voice session — continuing without voice"
+                )
+                voice = None
 
     # -- 4. Start main pipeline & synthesis loop ------------------------
     main_task = None
@@ -475,7 +544,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
 
     # -- 5. Cleanup -----------------------------------------------------
     capture.stop()
-    if voice:
+    if voice and args.voice_mode == "realtime":
         try:
             await voice.stop()
         except Exception:
