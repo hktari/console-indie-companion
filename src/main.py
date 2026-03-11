@@ -38,6 +38,7 @@ from src.prompts.tunic_companion import SYSTEM_INSTRUCTIONS
 from src.context.manager import ContextManager
 from src.context.synthesizer import ContextSynthesizer
 from src.detector.engine import DetectorEngine
+from src.memory.retriever import MemoryRetriever
 from src.rag import ExaRetriever, KnowledgeOrchestrator, LocalGameRetriever
 
 # RAG may not be indexed yet — import but handle failures gracefully.
@@ -427,7 +428,10 @@ async def run_pipeline(args: argparse.Namespace) -> None:
         LocalGameRetriever(qmd_url=os.environ.get("QMD_URL"))
     )
     orchestrator.register_retriever(ExaRetriever())
-    logger.info("RAG orchestrator initialised with local + Exa retrievers")
+    orchestrator.register_memory_retriever(
+        MemoryRetriever(qmd_url=os.environ.get("QMD_URL"))
+    )
+    logger.info("RAG orchestrator initialised with local + Exa + memory retrievers")
 
     context_mgr = ContextManager(orchestrator=orchestrator)
     logger.info("Context manager loaded")
@@ -544,11 +548,17 @@ async def run_pipeline(args: argparse.Namespace) -> None:
 
     # -- 5. Cleanup -----------------------------------------------------
     capture.stop()
-    if voice and args.voice_mode == "realtime":
-        try:
-            await voice.stop()
-        except Exception:
-            logger.exception("Error stopping voice session")
+    if voice:
+        if args.voice_mode == "realtime":
+            try:
+                await voice.stop()
+            except Exception:
+                logger.exception("Error stopping voice session")
+        else:
+            try:
+                voice.shutdown()
+            except Exception:
+                logger.exception("Error shutting down voice session")
     logger.info("Shutdown complete")
     logger.info(cost_tracker.get_summary_string())
 

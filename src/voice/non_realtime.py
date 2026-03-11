@@ -6,6 +6,7 @@ import threading
 import time
 import wave
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional, Protocol
 
 import numpy as np
@@ -22,6 +23,7 @@ except (ImportError, OSError):
     sd = None
 
 from src.context.manager import ContextManager
+from src.memory.manager import ConversationMemoryManager
 from src.prompts.tunic_companion import SYSTEM_INSTRUCTIONS
 from src.rag.orchestrator import KnowledgeOrchestrator, RetrievalResult
 from src.voice.config import CHANNELS, SAMPLE_RATE
@@ -196,6 +198,7 @@ class NonRealtimeVoiceSession:
         tts_model: str = "tts-1",
         tts_voice: str = "alloy",
         game_id: str = "tunic",
+        memory_dir: Optional[Path] = None,
     ) -> None:
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
@@ -221,6 +224,14 @@ class NonRealtimeVoiceSession:
         self._active_lock = asyncio.Lock()
         self._last_response: Optional[str] = None
 
+        if memory_dir is None:
+            memory_dir = Path("var/memory")
+        self._memory_manager = ConversationMemoryManager(
+            game_id=game_id,
+            memory_dir=memory_dir,
+            api_key=api_key,
+        )
+
     def start_recording(self) -> None:
         self._recorder.start_recording()
 
@@ -244,6 +255,17 @@ class NonRealtimeVoiceSession:
                 self._last_response = reply
                 await asyncio.to_thread(self._tts_player.speak, reply)
 
+                await asyncio.to_thread(
+                    self._memory_manager.add_turn,
+                    user_input=transcript,
+                    assistant_response=reply,
+                    scene_context=prompt_context.scene,
+                    is_event_triggered=False,
+                )
+
+                if self._memory_manager.should_summarize():
+                    await asyncio.to_thread(self._memory_manager.create_summary)
+
             if self._cost_tracker:
                 self._cost_tracker.log_call(
                     service="openai",
@@ -266,6 +288,17 @@ class NonRealtimeVoiceSession:
         if reply:
             self._last_response = reply
             await asyncio.to_thread(self._tts_player.speak, reply)
+
+            await asyncio.to_thread(
+                self._memory_manager.add_turn,
+                user_input=None,
+                assistant_response=reply,
+                scene_context=None,
+                is_event_triggered=True,
+            )
+
+            if self._memory_manager.should_summarize():
+                await asyncio.to_thread(self._memory_manager.create_summary)
 
     async def _build_prompt_context(self, transcript: str) -> PromptContext:
         frame = self._frame_provider.capture_once()
@@ -367,3 +400,9 @@ class NonRealtimeVoiceSession:
         if response.choices and response.choices[0].message.content:
             return response.choices[0].message.content.strip()
         return ""
+
+    def shutdown(self) -> None:
+        """Shutdown the voice session and flush memory."""
+        logger.info("Shutting down voice session, flushing memory...")
+        self._memory_manager.flush()
+        logger.info("Memory flushed, shutdown complete")
