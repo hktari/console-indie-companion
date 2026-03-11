@@ -423,15 +423,24 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     logger.info("VLM (Gemini) initialised")
 
     # Initialize RAG orchestrator
+    # Note: For non-realtime mode, Exa is now planner-controlled via agent layer
+    # For realtime mode, keep Exa in orchestrator for now
     orchestrator = KnowledgeOrchestrator()
     orchestrator.register_retriever(
         LocalGameRetriever(qmd_url=os.environ.get("QMD_URL"))
     )
-    orchestrator.register_retriever(ExaRetriever())
+    if args.voice_mode == "realtime":
+        orchestrator.register_retriever(ExaRetriever())
+        logger.info(
+            "RAG orchestrator initialised with local + Exa retrievers (realtime mode)"
+        )
+    else:
+        logger.info(
+            "RAG orchestrator initialised with local retriever only (non-realtime uses planner)"
+        )
     orchestrator.register_memory_retriever(
         MemoryRetriever(qmd_url=os.environ.get("QMD_URL"))
     )
-    logger.info("RAG orchestrator initialised with local + Exa + memory retrievers")
 
     context_mgr = ContextManager(orchestrator=orchestrator)
     logger.info("Context manager loaded")
@@ -464,8 +473,9 @@ async def run_pipeline(args: argparse.Namespace) -> None:
                 orchestrator=orchestrator,
                 cost_tracker=cost_tracker,
                 system_instructions=SYSTEM_INSTRUCTIONS,
+                qmd_url=os.environ.get("QMD_URL"),
             )
-            logger.info("Non-realtime voice session created")
+            logger.info("Non-realtime voice session created with planner")
 
     # -- 2. Start capture ------------------------------------------------
     if not capture.find_window():

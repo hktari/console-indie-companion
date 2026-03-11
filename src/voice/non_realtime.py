@@ -22,10 +22,12 @@ try:
 except (ImportError, OSError):
     sd = None
 
+from src.agent.models import EvidenceBundle
+from src.agent.planner import RequestPlanner
 from src.context.manager import ContextManager
 from src.memory.manager import ConversationMemoryManager
 from src.prompts.tunic_companion import SYSTEM_INSTRUCTIONS
-from src.rag.orchestrator import KnowledgeOrchestrator, RetrievalResult
+from src.rag.orchestrator import KnowledgeOrchestrator
 from src.voice.config import CHANNELS, SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
@@ -44,7 +46,7 @@ class PromptContext:
     transcript: str
     scene: Optional[dict[str, Any]]
     narrative: str
-    retrieval_results: list[RetrievalResult]
+    evidence: EvidenceBundle
 
 
 class PushToTalkRecorder:
@@ -199,6 +201,7 @@ class NonRealtimeVoiceSession:
         tts_voice: str = "alloy",
         game_id: str = "tunic",
         memory_dir: Optional[Path] = None,
+        qmd_url: Optional[str] = None,
     ) -> None:
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
@@ -213,6 +216,9 @@ class NonRealtimeVoiceSession:
         self._system_instructions = system_instructions
         self._model = model
         self._game_id = game_id
+
+        # Initialize planner for routing decisions
+        self._planner = RequestPlanner(qmd_url=qmd_url, model=model, api_key=api_key)
 
         self._recorder = PushToTalkRecorder()
         self._transcriber = OpenAIBatchTranscriber(api_key=api_key, model=stt_model)
@@ -320,21 +326,43 @@ class NonRealtimeVoiceSession:
                 scene = None
 
         narrative = self._context_manager.get_current_narrative()
-        retrieval_results: list[RetrievalResult] = []
-        if scene:
-            try:
-                query = self._build_retrieval_query(transcript, scene)
-                retrieval_results = await asyncio.to_thread(
-                    self._orchestrator.resolve, query, self._game_id
+
+        # Use planner to decide routing and gather evidence
+        evidence = EvidenceBundle()
+        try:
+            decision = await asyncio.to_thread(
+                self._planner.plan, transcript, scene, narrative
+            )
+            logger.info(
+                "Planner decision: %s (confidence: %.2f) - %s",
+                decision.route.value,
+                decision.confidence,
+                decision.reasoning,
+            )
+
+            if decision.tools_to_call:
+                query = (
+                    self._build_retrieval_query(transcript, scene)
+                    if scene
+                    else transcript
                 )
-            except Exception:
-                logger.exception("Prompt-time retrieval failed")
+                evidence = await asyncio.to_thread(
+                    self._planner.gather_evidence, decision, query, self._game_id
+                )
+                logger.info(
+                    "Evidence gathered: %d KB results, %d memory results, sources: %s",
+                    len(evidence.kb_results),
+                    len(evidence.memory_results),
+                    ", ".join(evidence.sources),
+                )
+        except Exception:
+            logger.exception("Planner execution failed, continuing without evidence")
 
         return PromptContext(
             transcript=transcript,
             scene=scene,
             narrative=narrative,
-            retrieval_results=retrieval_results[:3],
+            evidence=evidence,
         )
 
     def _build_retrieval_query(self, transcript: str, scene: dict[str, Any]) -> str:
@@ -361,11 +389,16 @@ class NonRealtimeVoiceSession:
             )
 
         retrieval_text = "No additional retrieval context."
-        if prompt_context.retrieval_results:
-            retrieval_text = "\n\n".join(
-                f"[{result.source}]\n{result.content}"
-                for result in prompt_context.retrieval_results
-            )
+        if prompt_context.evidence.has_evidence():
+            all_results = prompt_context.evidence.get_all_results()
+            if all_results:
+                retrieval_text = "\n\n".join(
+                    f"[{result.source}]\n{result.content}" for result in all_results[:3]
+                )
+            if prompt_context.evidence.research_memo:
+                retrieval_text = (
+                    f"Research findings:\n{prompt_context.evidence.research_memo}"
+                )
 
         user_prompt = (
             f"Player said: {prompt_context.transcript}\n\n"
