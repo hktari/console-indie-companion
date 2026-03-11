@@ -16,6 +16,23 @@ from google.genai import types
 
 logger = logging.getLogger(__name__)
 
+# DEV'S NOTE: should evaluate how good the location classification is and if it's worth it.
+# activity is worth it, especially, exploring, fighting, in menu, viewing map. I think this works good
+# enemies is probably a miss, would need a finetuned model to identify specific enemies
+# health_status. We're doing that with opencv detectors.
+#
+
+# I think VLM can be useful for generic scene understanding. Especially when the user prompts the assistant. Then a description of the scene can provide useful additional context that can result in an improved user experience.
+
+
+# The usefulness of the synthesizer is also limited to the quality of the VLM scene descriptions. It is certainly an addition in terms of providing a comprehensive description of the short term history of the user's gameplay instead of just the last scene description.
+
+
+# in any case I think the most value from the assistant comes from memory, event detectors via opencv, on demand question answering from knowledge base and web search, and the ability to react meaningfully to a generic description of the short term history of the user's gameplay.
+
+# also I believe that a realtime chat is unnecessary. This is because the user experience is such that the assistant responds when prompted (this can be via push to talk) or when an event has been detected. Therefore we can rely on simple text based prompts + TTS / STT.
+# I'd like to explore a way to integrate VocalLinux output, as it already runs on my system with a push to talk function.
+
 ANALYSIS_PROMPT = """\
 Analyze this screenshot from the game Tunic and return a JSON object with exactly these fields.
 If you are not sure about a specific field, return null for that field.
