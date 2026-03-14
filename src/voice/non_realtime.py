@@ -28,6 +28,7 @@ from src.context.manager import ContextManager
 from src.memory.manager import ConversationMemoryManager
 from src.prompts.tunic_companion import SYSTEM_INSTRUCTIONS
 from src.rag.orchestrator import KnowledgeOrchestrator
+from src.utils.performance import get_performance_tracker
 from src.voice.config import CHANNELS, SAMPLE_RATE
 from src.voice.realtime_transcriber import RealtimeTranscriber
 
@@ -349,8 +350,21 @@ class NonRealtimeVoiceSession:
         self._model = model
         self._game_id = game_id
 
+        # Initialize TTS player early so planner callback can use it
+        self._tts_player = OpenAITTSPlayer(
+            api_key=api_key,
+            model=tts_model,
+            voice=tts_voice,
+        )
+
         # Initialize planner for routing decisions
-        self._planner = RequestPlanner(qmd_url=qmd_url, model=model, api_key=api_key)
+        self._planner = RequestPlanner(
+            qmd_url=qmd_url,
+            model=model,
+            api_key=api_key,
+            on_research_start=lambda: self._tts_player.speak("Let me look that up."),
+        )
+        self._perf = get_performance_tracker()
 
         self._input_mode = input_mode
         self._recorder: Optional[PushToTalkRecorder] = None
@@ -371,12 +385,6 @@ class NonRealtimeVoiceSession:
             )
         else:
             raise ValueError(f"Unknown input_mode: {input_mode}")
-
-        self._tts_player = OpenAITTSPlayer(
-            api_key=api_key,
-            model=tts_model,
-            voice=tts_voice,
-        )
         self._active_lock = asyncio.Lock()
         self._last_response: Optional[str] = None
 
@@ -427,23 +435,36 @@ class NonRealtimeVoiceSession:
 
         async with self._active_lock:
             started_at = time.perf_counter()
-            prompt_context = await self._build_prompt_context(transcript)
-            reply = await asyncio.to_thread(self._generate_reply, prompt_context)
-            if reply:
-                logger.info("Agent response: %s", reply)
-                self._last_response = reply
-                await asyncio.to_thread(self._tts_player.speak, reply)
 
-                await asyncio.to_thread(
-                    self._memory_manager.add_turn,
-                    user_input=transcript,
-                    assistant_response=reply,
-                    scene_context=prompt_context.scene,
-                    is_event_triggered=False,
-                )
+            with self._perf.measure("agent.total_response_time", log_threshold=5.0):
+                with self._perf.measure(
+                    "agent.build_prompt_context", log_threshold=2.0
+                ):
+                    prompt_context = await self._build_prompt_context(transcript)
 
-                if self._memory_manager.should_summarize():
-                    await asyncio.to_thread(self._memory_manager.create_summary)
+                with self._perf.measure("agent.generate_reply", log_threshold=3.0):
+                    reply = await asyncio.to_thread(
+                        self._generate_reply, prompt_context
+                    )
+
+                if reply:
+                    logger.info("Agent response: %s", reply)
+                    self._last_response = reply
+
+                    with self._perf.measure("agent.tts_playback", log_threshold=2.0):
+                        await asyncio.to_thread(self._tts_player.speak, reply)
+
+                    with self._perf.measure("agent.memory_update", log_threshold=0.5):
+                        await asyncio.to_thread(
+                            self._memory_manager.add_turn,
+                            user_input=transcript,
+                            assistant_response=reply,
+                            scene_context=prompt_context.scene,
+                            is_event_triggered=False,
+                        )
+
+                        if self._memory_manager.should_summarize():
+                            await asyncio.to_thread(self._memory_manager.create_summary)
 
             if self._cost_tracker:
                 self._cost_tracker.log_call(
@@ -623,16 +644,18 @@ class NonRealtimeVoiceSession:
                 await asyncio.to_thread(self._memory_manager.create_summary)
 
     async def _build_prompt_context(self, transcript: str) -> PromptContext:
-        frame = self._frame_provider.capture_once()
-        if frame is None:
-            frame = self._frame_provider.get_latest_frame()
+        with self._perf.measure("context.capture_frame", log_threshold=0.5):
+            frame = self._frame_provider.capture_once()
+            if frame is None:
+                frame = self._frame_provider.get_latest_frame()
 
         scene: Optional[dict[str, Any]] = None
         if frame is not None:
             try:
-                scene = await asyncio.to_thread(
-                    self._scene_analyzer.analyze_screenshot, frame, "image/jpeg"
-                )
+                with self._perf.measure("context.vlm_analysis", log_threshold=2.0):
+                    scene = await asyncio.to_thread(
+                        self._scene_analyzer.analyze_screenshot, frame, "image/jpeg"
+                    )
                 if scene and isinstance(scene, dict) and "error" not in scene:
                     self._context_manager.update_scene(scene)
                 else:
@@ -646,9 +669,10 @@ class NonRealtimeVoiceSession:
         # Use planner to decide routing and gather evidence
         evidence = EvidenceBundle()
         try:
-            decision = await asyncio.to_thread(
-                self._planner.plan, transcript, scene, narrative
-            )
+            with self._perf.measure("planner.plan", log_threshold=0.5):
+                decision = await asyncio.to_thread(
+                    self._planner.plan, transcript, scene, narrative
+                )
             logger.info(
                 "Planner decision: %s (confidence: %.2f) - %s",
                 decision.route.value,
@@ -662,9 +686,10 @@ class NonRealtimeVoiceSession:
                     if scene
                     else transcript
                 )
-                evidence = await asyncio.to_thread(
-                    self._planner.gather_evidence, decision, query, self._game_id
-                )
+                with self._perf.measure("planner.gather_evidence", log_threshold=3.0):
+                    evidence = await asyncio.to_thread(
+                        self._planner.gather_evidence, decision, query, self._game_id
+                    )
                 logger.info(
                     "Evidence gathered: %d KB results, %d memory results, sources: %s",
                     len(evidence.kb_results),

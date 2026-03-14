@@ -3,7 +3,7 @@
 import logging
 
 from src.rag.orchestrator import RetrievalResult
-from src.rag.qmd_client import QmdMcpStdioClient
+from src.rag.qmd_pool import get_qmd_pool
 
 logger = logging.getLogger(__name__)
 
@@ -15,19 +15,16 @@ class MemoryRetriever:
     metadata to avoid mixing with static game knowledge.
     """
 
-    def __init__(
-        self,
-        index_name: str = "game-companion",
-    ) -> None:
+    def __init__(self, index_name: str = "game-companion"):
         """Initialize the memory retriever.
 
         Args:
-            index_name: Name of the QMD index.
+            index_name: QMD index name to query.
         """
         self.index_name = index_name
-        self._client = QmdMcpStdioClient(index_name)
+        self._pool = get_qmd_pool()
         logger.info(
-            "MemoryRetriever using QMD MCP stdio client with index: %s", index_name
+            "MemoryRetriever using QMD connection pool with index: %s", index_name
         )
 
     def query(
@@ -49,7 +46,9 @@ class MemoryRetriever:
         collection_name = f"{game_id}-memory"
 
         try:
-            qmd_results = self._client.query(text, collection_name, limit=n_results)
+            qmd_results = self._pool.query(
+                text, collection_name, self.index_name, limit=n_results
+            )
 
             retrieval_results: list[RetrievalResult] = []
             for r in qmd_results:
@@ -83,7 +82,6 @@ class MemoryRetriever:
             logger.debug("Memory retrieval failed for '%s': %s", text, e)
             return []
 
-    def shutdown(self) -> None:
-        """Shutdown the QMD client."""
-        if hasattr(self._client, "shutdown"):
-            self._client.shutdown()
+    def shutdown(self):
+        """Shutdown is handled by the global pool."""
+        pass

@@ -38,7 +38,8 @@ class ResearchSubagent:
 
         # Use LangChain for cleaner message handling
         self._llm = ChatOpenAI(
-            model=model,
+            model="gpt-5",
+            reasoning="low",
             api_key=self._api_key,  # type: ignore
             temperature=0.3,
         )
@@ -55,6 +56,7 @@ class ResearchSubagent:
             Compact research memo with key findings and sources
         """
         logger.info("Research subagent starting for query: %s", query[:100])
+        # Note: Caller should inform user before calling this (e.g., "Let me look that up")
 
         # Step 1: Gather raw search results
         kb_results = []

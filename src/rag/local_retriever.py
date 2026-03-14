@@ -2,8 +2,8 @@
 
 import logging
 
-from .orchestrator import RetrievalResult
-from .qmd_client import QmdMcpStdioClient
+from src.rag.orchestrator import RetrievalResult
+from src.rag.qmd_pool import get_qmd_pool
 
 logger = logging.getLogger(__name__)
 
@@ -15,15 +15,15 @@ class LocalGameRetriever:
         self,
         index_name: str = "game-companion",
     ) -> None:
-        """Initialize the local retriever.
+        """Initialize the local game retriever.
 
         Args:
-            index_name: Name of the QMD index.
+            index_name: QMD index name to query.
         """
         self.index_name = index_name
-        self._client = QmdMcpStdioClient(index_name)
+        self._pool = get_qmd_pool()
         logger.info(
-            "LocalGameRetriever using QMD MCP stdio client with index: %s", index_name
+            "LocalGameRetriever using QMD connection pool with index: %s", index_name
         )
 
     def query(
@@ -40,7 +40,9 @@ class LocalGameRetriever:
             List of retrieval results.
         """
         try:
-            qmd_results = self._client.query(text, game_id, limit=n_results)
+            qmd_results = self._pool.query(
+                text, game_id, self.index_name, limit=n_results
+            )
 
             retrieval_results: list[RetrievalResult] = []
             for r in qmd_results:
@@ -74,6 +76,5 @@ class LocalGameRetriever:
             return []
 
     def shutdown(self) -> None:
-        """Shutdown the QMD client."""
-        if hasattr(self._client, "shutdown"):
-            self._client.shutdown()
+        """Shutdown is handled by the global pool."""
+        pass

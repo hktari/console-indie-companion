@@ -2,13 +2,14 @@
 
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import openai
 
 from src.agent.models import AgentDecision, EvidenceBundle, RouteType
 from src.agent.research import ResearchSubagent
 from src.agent.tools import knowledge_base_search, memory_search
+from src.utils.performance import get_performance_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ class RequestPlanner:
         qmd_url: Optional[str] = None,
         model: str = "gpt-4.1-mini",
         api_key: Optional[str] = None,
+        on_research_start: Optional[Callable[[], None]] = None,
     ):
         """Initialize the request planner.
 
@@ -28,6 +30,7 @@ class RequestPlanner:
             qmd_url: QMD server URL for retrieval
             model: OpenAI model for classification
             api_key: OpenAI API key
+            on_research_start: Optional callback to notify user before research starts
         """
         self._qmd_url = qmd_url
         self._model = model
@@ -35,6 +38,8 @@ class RequestPlanner:
         if not self._api_key:
             raise ValueError("OpenAI API key required for planner")
         self._client = openai.OpenAI(api_key=self._api_key)
+        self._perf = get_performance_tracker()
+        self._on_research_start = on_research_start
 
         # Initialize research subagent for web research delegation
         self._research_subagent = ResearchSubagent(
@@ -185,27 +190,44 @@ class RequestPlanner:
             try:
                 logger.info("Executing tool: %s", tool_name)
                 if tool_name == "knowledge_base_search":
-                    results = knowledge_base_search.invoke(
-                        {"query": query, "game_id": game_id, "qmd_url": self._qmd_url}
-                    )
+                    with self._perf.measure(
+                        "tool.knowledge_base_search", log_threshold=1.0
+                    ):
+                        results = knowledge_base_search.invoke(
+                            {
+                                "query": query,
+                                "game_id": game_id,
+                                "qmd_url": self._qmd_url,
+                            }
+                        )
                     bundle.kb_results = results[:3]
                     bundle.sources.append("knowledge_base")
 
                 elif tool_name == "memory_search":
-                    results = memory_search.invoke(
-                        {"query": query, "game_id": game_id, "qmd_url": self._qmd_url}
-                    )
+                    with self._perf.measure("tool.memory_search", log_threshold=1.0):
+                        results = memory_search.invoke(
+                            {
+                                "query": query,
+                                "game_id": game_id,
+                                "qmd_url": self._qmd_url,
+                            }
+                        )
                     bundle.memory_results = results[:2]
                     bundle.sources.append("memory")
 
                 elif tool_name == "web_search":
+                    # Notify user before starting research
+                    if self._on_research_start:
+                        self._on_research_start()
+
                     # Delegate to research subagent for isolated web research
                     logger.info("Delegating to research subagent for web research")
-                    research_memo = self._research_subagent.research(
-                        query=query,
-                        game_id=game_id,
-                        use_web=True,
-                    )
+                    with self._perf.measure("tool.web_search", log_threshold=2.0):
+                        research_memo = self._research_subagent.research(
+                            query=query,
+                            game_id=game_id,
+                            use_web=True,
+                        )
                     bundle.research_memo = research_memo
                     bundle.sources.append("web_research")
 

@@ -4,6 +4,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Optional, Protocol
 
+from src.rag.qmd_pool import get_qmd_pool
+
 logger = logging.getLogger(__name__)
 
 
@@ -95,7 +97,7 @@ class KnowledgeOrchestrator:
         return all_results
 
     def shutdown(self) -> None:
-        """Shutdown all registered retrievers."""
+        """Shutdown all registered retrievers and the QMD connection pool."""
         for retriever in self._retrievers:
             if hasattr(retriever, "shutdown"):
                 try:
@@ -112,3 +114,10 @@ class KnowledgeOrchestrator:
                 self._memory_retriever.shutdown()  # type: ignore[attr-defined]
             except Exception as e:
                 logger.warning("Error shutting down memory retriever: %s", e)
+
+        # Shutdown the global QMD connection pool
+        try:
+            pool = get_qmd_pool()
+            pool.shutdown()
+        except Exception as e:
+            logger.warning("Error shutting down QMD connection pool: %s", e)

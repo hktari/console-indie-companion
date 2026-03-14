@@ -29,7 +29,7 @@ from src.capture.replay import ReplayCapture
 from src.vlm.analyze import SceneAnalyzer
 from src.voice.non_realtime import NonRealtimeVoiceSession
 from src.voice.realtime import VoiceSession
-from src.utils import CostTracker
+from src.utils import CostTracker, get_performance_tracker
 from src.utils.logging_config import setup_logging
 
 from src.prompts.tunic_companion import SYSTEM_INSTRUCTIONS
@@ -677,6 +677,10 @@ async def run_pipeline(args: argparse.Namespace) -> None:
 
     logger.info("Shutdown complete")
     logger.info(cost_tracker.get_summary_string())
+
+    # Log performance summary
+    perf_tracker = get_performance_tracker()
+    perf_tracker.log_summary()
 
 
 # ---------------------------------------------------------------------------
