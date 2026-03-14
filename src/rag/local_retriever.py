@@ -1,10 +1,9 @@
 """Local QMD knowledge retriever."""
 
 import logging
-from typing import Optional
 
 from .orchestrator import RetrievalResult
-from .qmd_client import QmdCliClient, QmdHttpClient
+from .qmd_client import QmdMcpStdioClient
 
 logger = logging.getLogger(__name__)
 
@@ -14,27 +13,18 @@ class LocalGameRetriever:
 
     def __init__(
         self,
-        qmd_url: Optional[str] = None,
         index_name: str = "game-companion",
     ) -> None:
         """Initialize the local retriever.
 
         Args:
-            qmd_url: QMD server URL (e.g., http://localhost:18788). If None, uses CLI.
-            index_name: Name of the QMD index (used for CLI mode).
+            index_name: Name of the QMD index.
         """
-        self.qmd_url = qmd_url
         self.index_name = index_name
-
-        # Initialize client based on configuration
-        if qmd_url:
-            self._client = QmdHttpClient(qmd_url)
-            logger.info("LocalGameRetriever using QMD HTTP client: %s", qmd_url)
-        else:
-            self._client = QmdCliClient(index_name)
-            logger.info(
-                "LocalGameRetriever using QMD CLI client with index: %s", index_name
-            )
+        self._client = QmdMcpStdioClient(index_name)
+        logger.info(
+            "LocalGameRetriever using QMD MCP stdio client with index: %s", index_name
+        )
 
     def query(
         self, text: str, game_id: str, n_results: int = 5

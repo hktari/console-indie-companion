@@ -13,7 +13,7 @@ import os
 import sys
 from typing import Optional
 
-from src.rag.qmd_client import QmdCliClient, QmdHttpClient
+from src.rag.qmd_client import QmdMcpStdioClient
 from src.utils.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -33,15 +33,10 @@ def query_tunic_knowledge(
     Returns:
         List of relevant text chunks
     """
-    # Use QMD HTTP client if URL is set, otherwise use CLI
-    qmd_url = os.environ.get("QMD_URL")
-
-    if qmd_url:
-        client = QmdHttpClient(qmd_url)
-        logger.info("Using QMD HTTP client: %s", qmd_url)
-    else:
-        client = QmdCliClient(index_name="game-companion")
-        logger.info("Using QMD CLI client with index: game-companion")
+    # Use QMD MCP stdio client
+    index_name = os.environ.get("QMD_INDEX", "game-companion")
+    client = QmdMcpStdioClient(index_name=index_name)
+    logger.info("Using QMD MCP stdio client with index: %s", index_name)
 
     try:
         logger.info("Querying QMD: '%s'", question)

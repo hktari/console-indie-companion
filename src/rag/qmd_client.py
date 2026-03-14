@@ -1,11 +1,10 @@
-"""QMD client for querying local knowledge base."""
+"""QMD client for querying local knowledge base via MCP stdio."""
 
 import json
 import logging
 import subprocess
-from typing import Any, Protocol
-
-import requests
+from typing import Any, Protocol, cast
+from io import TextIOWrapper
 
 logger = logging.getLogger(__name__)
 
@@ -44,33 +43,106 @@ class QmdClient(Protocol):
         ...
 
 
-class QmdHttpClient:
-    """QMD HTTP client for querying via REST API."""
+class QmdMcpStdioClient:
+    """QMD MCP client using stdio transport.
 
-    def __init__(self, base_url: str):
-        """Initialize HTTP client.
+    Queries the MCP server directly via its stdio transport by spawning
+    the 'qmd mcp' command and communicating via JSON-RPC.
+    """
 
-        Args:
-            base_url: Base URL of QMD server (e.g., http://localhost:18788).
-        """
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, index_name: str = "game-companion"):
+        self.index_name = index_name
+        self._process = None
+        self._id_counter = 0
+
+    def _start(self):
+        if self._process is not None:
+            return
+
+        command = ["qmd", "--index", self.index_name, "mcp"]
+        self._process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+
+        # Send initialize request
+        self._call(
+            "initialize",
+            {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "qmd-python-client", "version": "0.1.0"},
+            },
+        )
+
+        # Send initialized notification
+        self._notify("notifications/initialized")
+
+    def _call(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        if self._process is None:
+            raise RuntimeError("MCP process not started")
+
+        self._id_counter += 1
+        request_id = self._id_counter
+        request = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": params or {},
+        }
+
+        logger.debug("MCP Request: %s", json.dumps(request, indent=2))
+        stdin = cast(TextIOWrapper, self._process.stdin)
+        stdin.write(json.dumps(request) + "\n")
+        stdin.flush()
+
+        # Read response (blocking for simplicity in POC)
+        stdout = cast(TextIOWrapper, self._process.stdout)
+        while True:
+            line = stdout.readline()
+            if not line:
+                raise RuntimeError("MCP process exited unexpectedly")
+
+            # Skip non-JSON lines (like build logs or warnings)
+            line = line.strip()
+            if not line or not line.startswith("{"):
+                continue
+
+            try:
+                response = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if response.get("id") == request_id:
+                logger.debug("MCP Response: %s", json.dumps(response, indent=2))
+                if "error" in response:
+                    raise RuntimeError(f"MCP error: {response['error']}")
+                return response.get("result")
+            # Ignore notifications/other messages for now
+
+    def _notify(self, method: str, params: dict[str, Any] | None = None):
+        if self._process is None:
+            raise RuntimeError("MCP process not started")
+
+        notification = {"jsonrpc": "2.0", "method": method, "params": params or {}}
+        stdin = cast(TextIOWrapper, self._process.stdin)
+        stdin.write(json.dumps(notification) + "\n")
+        stdin.flush()
 
     def query(self, text: str, game_id: str, limit: int = 5) -> list[QmdQueryResult]:
-        """Query via HTTP API.
+        """Query via MCP stdio using the 'query' tool with typed sub-queries."""
+        self._start()
 
-        Args:
-            text: Query text.
-            game_id: Collection name.
-            limit: Maximum number of results.
-
-        Returns:
-            List of query results.
-        """
-        try:
-            response = requests.post(
-                f"{self.base_url}/query",
-                headers={"Content-Type": "application/json"},
-                json={
+        # Use the 'query' tool with both lex (keyword) and vec (semantic) searches
+        result = self._call(
+            "tools/call",
+            {
+                "name": "query",
+                "arguments": {
                     "searches": [
                         {"type": "lex", "query": text},
                         {"type": "vec", "query": text},
@@ -78,96 +150,24 @@ class QmdHttpClient:
                     "collections": [game_id],
                     "limit": limit,
                 },
-                timeout=10.0,
+            },
+        )
+
+        # MCP tools return { content: [{ type: 'text', text: '...' }], structuredContent: { ... } }
+        structured = result.get("structuredContent", {})
+        results = structured.get("results", [])
+
+        return [
+            QmdQueryResult(
+                content=r.get("snippet", ""),
+                score=r.get("score", 0.0),
+                file=r.get("file", ""),
+                docid=r.get("docid", ""),
+                metadata={"source": r.get("file"), "mcp": True},
             )
+            for r in results
+        ]
 
-            if not response.ok:
-                raise RuntimeError(
-                    f"QMD HTTP error: {response.status_code} {response.text}"
-                )
-
-            data = response.json()
-            results = data.get("results", [])
-
-            return [
-                QmdQueryResult(
-                    content=r.get("snippet") or r.get("content", ""),
-                    score=r.get("score", 0.0),
-                    file=r.get("file", ""),
-                    docid=r.get("docid", ""),
-                    metadata=r.get("metadata", {"source": r.get("file")}),
-                )
-                for r in results
-            ]
-
-        except Exception as e:
-            logger.error("QMD HTTP query failed: %s", e, exc_info=True)
-            raise
-
-
-class QmdCliClient:
-    """QMD CLI client for querying via command-line interface."""
-
-    def __init__(self, index_name: str = "game-companion"):
-        """Initialize CLI client.
-
-        Args:
-            index_name: Name of the QMD index.
-        """
-        self.index_name = index_name
-
-    def query(self, text: str, game_id: str, limit: int = 5) -> list[QmdQueryResult]:
-        """Query via CLI.
-
-        Args:
-            text: Query text.
-            game_id: Collection name.
-            limit: Maximum number of results.
-
-        Returns:
-            List of query results.
-        """
-        try:
-            # Escape quotes in query text
-            escaped_text = text.replace('"', '\\"')
-            command = [
-                "qmd",
-                "--index",
-                self.index_name,
-                "query",
-                "--json",
-                "-n",
-                str(limit),
-                "-c",
-                game_id,
-                escaped_text,
-            ]
-
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=10.0,
-            )
-
-            data = json.loads(result.stdout)
-            results = data.get("results", [])
-
-            return [
-                QmdQueryResult(
-                    content=r.get("snippet") or r.get("content", ""),
-                    score=r.get("score", 0.0),
-                    file=r.get("file", ""),
-                    docid=r.get("docid", ""),
-                    metadata=r.get("metadata", {"source": r.get("file")}),
-                )
-                for r in results
-            ]
-
-        except subprocess.CalledProcessError as e:
-            logger.error("QMD CLI query failed: %s", e.stderr, exc_info=True)
-            raise
-        except Exception as e:
-            logger.error("QMD CLI query failed: %s", e, exc_info=True)
-            raise
+    def __del__(self):
+        if self._process:
+            self._process.terminate()
