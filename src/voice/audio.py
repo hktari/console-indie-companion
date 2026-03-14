@@ -15,7 +15,13 @@ try:
 except ImportError:
     pyaudio = None
 
-from src.voice.config import SAMPLE_RATE, CHANNELS, CHUNK_SAMPLES, BYTES_PER_SAMPLE
+from src.voice.config import (
+    SAMPLE_RATE,
+    CHANNELS,
+    CHUNK_SAMPLES,
+    BYTES_PER_SAMPLE,
+    INPUT_GAIN,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,10 +97,15 @@ class AudioManager:
             if status_flags:
                 logger.warning("Mic status: %s", status_flags)
 
-            # Apply input gain (100x) and clip
+            # Apply configurable input gain and clip to prevent overflow
             audio_data = np.frombuffer(in_data, dtype=np.int16)
-            amplified = np.clip(audio_data.astype(np.float32) * 100.0, -32768, 32767)
-            pcm16 = amplified.astype(np.int16).tobytes()
+            if INPUT_GAIN != 1.0:
+                amplified = np.clip(
+                    audio_data.astype(np.float32) * INPUT_GAIN, -32768, 32767
+                )
+                pcm16 = amplified.astype(np.int16).tobytes()
+            else:
+                pcm16 = in_data
 
             if self.on_audio_data:
                 try:

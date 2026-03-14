@@ -103,9 +103,15 @@ def parse_args() -> argparse.Namespace:
         help="Voice interaction mode (default: non-realtime).",
     )
     parser.add_argument(
+        "--input-mode",
+        default="ptt",
+        choices=["ptt", "realtime"],
+        help="Input mode for non-realtime voice: ptt (push-to-talk) or realtime (continuous transcription with manual submit). Default: ptt.",
+    )
+    parser.add_argument(
         "--ptt-key",
         default="shift_r",
-        help="Push-to-talk key for non-realtime mode (default: shift_r).",
+        help="Key for voice input: PTT in ptt mode, submit-to-agent in realtime mode (default: shift_r).",
     )
     parser.add_argument(
         "--model",
@@ -178,15 +184,22 @@ def setup_key_listener(
 ) -> keyboard.Listener:
     """Setup and run a non-blocking keyboard listener.
 
-    Supports both push-to-talk (hold) and toggle (press) modes.
-    Toggle mode is detected automatically from voice_session._recorder.mode.
+    Supports three modes:
+    - push-to-talk: Hold to record, release to stop and transcribe
+    - toggle: Press once to start, press again to stop and transcribe
+    - realtime: Press to submit buffered transcript to agent
 
     Returns the listener instance so it can be stopped during shutdown.
     """
 
     target_key = ptt_key.lower()
 
-    # Detect if voice session is in toggle mode
+    # Detect input mode
+    is_realtime_mode = (
+        hasattr(voice_session, "_input_mode")
+        and voice_session._input_mode == "realtime"
+    )
+
     is_toggle_mode = (
         hasattr(voice_session, "_recorder")
         and hasattr(voice_session._recorder, "mode")
@@ -206,7 +219,24 @@ def setup_key_listener(
         if not _key_matches(key):
             return
 
-        if is_toggle_mode:
+        if is_realtime_mode:
+            # Realtime mode: press to submit buffered transcript to agent
+            if hasattr(voice_session, "submit_transcript_and_respond"):
+                future = asyncio.run_coroutine_threadsafe(
+                    voice_session.submit_transcript_and_respond(),
+                    loop,
+                )
+
+                def _done_callback(result_future):
+                    try:
+                        reply = result_future.result()
+                        if reply:
+                            logger.info("Assistant: %s", reply)
+                    except Exception:
+                        logger.exception("Realtime submit response failed")
+
+                future.add_done_callback(_done_callback)
+        elif is_toggle_mode:
             # Toggle mode: single press toggles recording on/off
             if hasattr(voice_session, "toggle_recording_and_respond"):
                 future = asyncio.run_coroutine_threadsafe(
@@ -238,8 +268,8 @@ def setup_key_listener(
         if not _key_matches(key):
             return
 
-        # In toggle mode, ignore release events
-        if is_toggle_mode:
+        # In toggle or realtime mode, ignore release events
+        if is_toggle_mode or is_realtime_mode:
             return
 
         # Push-to-talk mode: release to stop
@@ -262,7 +292,12 @@ def setup_key_listener(
 
             future.add_done_callback(_done_callback)
 
-    mode_name = "toggle" if is_toggle_mode else "push-to-talk"
+    if is_realtime_mode:
+        mode_name = "realtime-transcription"
+    elif is_toggle_mode:
+        mode_name = "toggle"
+    else:
+        mode_name = "push-to-talk"
     # The listener runs in its own thread, so it's non-blocking
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     logger.info("Key listener started for '%s' key (%s mode).", ptt_key, mode_name)
@@ -508,8 +543,14 @@ async def run_pipeline(args: argparse.Namespace) -> None:
                 system_instructions=SYSTEM_INSTRUCTIONS,
                 recorder_mode="toggle",
                 qmd_url=os.environ.get("QMD_URL"),
+                input_mode=args.input_mode,
             )
-            logger.info("Non-realtime voice session created with planner")
+            if args.input_mode == "realtime":
+                logger.info(
+                    "Non-realtime voice session created with realtime transcription input"
+                )
+            else:
+                logger.info("Non-realtime voice session created with PTT input")
 
     # -- 2. Start capture ------------------------------------------------
     if not capture.find_window():
@@ -532,6 +573,16 @@ async def run_pipeline(args: argparse.Namespace) -> None:
             except Exception:
                 logger.exception(
                     "Failed to start voice session — continuing without voice"
+                )
+                voice = None
+        elif args.input_mode == "realtime":
+            # Start realtime transcription for non-realtime voice mode
+            try:
+                await voice.start_transcription()
+                logger.info("Realtime transcription started")
+            except Exception:
+                logger.exception(
+                    "Failed to start realtime transcription — continuing without voice"
                 )
                 voice = None
 

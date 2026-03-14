@@ -9,6 +9,7 @@ CHANNELS = 1  # Mono
 CHUNK_DURATION_MS = 100  # ms per mic capture chunk
 CHUNK_SAMPLES = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)  # samples/chunk
 BYTES_PER_SAMPLE = 2  # PCM16 = 2 bytes per sample
+INPUT_GAIN = 1.0  # Microphone input gain multiplier (1.0 = no gain, 2.0 = 2x, etc.)
 
 MODEL = "gpt-realtime-mini"
 WS_URL = f"wss://api.openai.com/v1/realtime?model={MODEL}"

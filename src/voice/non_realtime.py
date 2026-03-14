@@ -29,6 +29,7 @@ from src.memory.manager import ConversationMemoryManager
 from src.prompts.tunic_companion import SYSTEM_INSTRUCTIONS
 from src.rag.orchestrator import KnowledgeOrchestrator
 from src.voice.config import CHANNELS, SAMPLE_RATE
+from src.voice.realtime_transcriber import RealtimeTranscriber
 
 logger = logging.getLogger(__name__)
 
@@ -332,6 +333,7 @@ class NonRealtimeVoiceSession:
         qmd_url: Optional[str] = None,
         recorder_mode: str = "push-to-talk",
         enable_recorder_sounds: bool = True,
+        input_mode: str = "ptt",
     ) -> None:
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
@@ -350,11 +352,26 @@ class NonRealtimeVoiceSession:
         # Initialize planner for routing decisions
         self._planner = RequestPlanner(qmd_url=qmd_url, model=model, api_key=api_key)
 
-        self._recorder = PushToTalkRecorder(
-            mode=recorder_mode,
-            enable_sounds=enable_recorder_sounds,
-        )
-        self._transcriber = OpenAIBatchTranscriber(api_key=api_key, model=stt_model)
+        self._input_mode = input_mode
+        self._recorder: Optional[PushToTalkRecorder] = None
+        self._transcriber: Optional[OpenAIBatchTranscriber] = None
+        self._realtime_transcriber: Optional[RealtimeTranscriber] = None
+
+        if input_mode == "ptt":
+            self._recorder = PushToTalkRecorder(
+                mode=recorder_mode,
+                enable_sounds=enable_recorder_sounds,
+            )
+            self._transcriber = OpenAIBatchTranscriber(api_key=api_key, model=stt_model)
+        elif input_mode == "realtime":
+            # Create transcriber with auto-submit callback on speech_stopped
+            self._realtime_transcriber = RealtimeTranscriber(
+                api_key=api_key,
+                on_speech_stopped=self._on_vad_speech_stopped,
+            )
+        else:
+            raise ValueError(f"Unknown input_mode: {input_mode}")
+
         self._tts_player = OpenAITTSPlayer(
             api_key=api_key,
             model=tts_model,
@@ -371,20 +388,92 @@ class NonRealtimeVoiceSession:
             api_key=api_key,
         )
 
+    async def start_transcription(self) -> None:
+        """Start the transcription session (realtime mode only)."""
+        if self._input_mode == "realtime" and self._realtime_transcriber:
+            await self._realtime_transcriber.start()
+        else:
+            logger.warning("start_transcription called but not in realtime mode")
+
+    async def stop_transcription(self) -> None:
+        """Stop the transcription session (realtime mode only)."""
+        if self._input_mode == "realtime" and self._realtime_transcriber:
+            await self._realtime_transcriber.stop()
+
     def start_recording(self) -> None:
-        self._recorder.start_recording()
+        """Start recording (PTT mode only)."""
+        if self._recorder:
+            self._recorder.start_recording()
+
+    async def submit_transcript_and_respond(self) -> Optional[str]:
+        """Submit buffered transcript to agent (realtime mode only).
+
+        Returns:
+            Agent response text if successful, None otherwise.
+        """
+        if self._input_mode != "realtime" or not self._realtime_transcriber:
+            logger.warning(
+                "submit_transcript_and_respond called but not in realtime mode"
+            )
+            return None
+
+        transcript = self._realtime_transcriber.get_buffered_transcript()
+        if not transcript:
+            logger.info("No transcript buffered to submit")
+            return None
+
+        # Clear buffer after retrieving
+        self._realtime_transcriber.clear_buffer()
+
+        async with self._active_lock:
+            started_at = time.perf_counter()
+            prompt_context = await self._build_prompt_context(transcript)
+            reply = await asyncio.to_thread(self._generate_reply, prompt_context)
+            if reply:
+                self._last_response = reply
+                await asyncio.to_thread(self._tts_player.speak, reply)
+
+                await asyncio.to_thread(
+                    self._memory_manager.add_turn,
+                    user_input=transcript,
+                    assistant_response=reply,
+                    scene_context=prompt_context.scene,
+                    is_event_triggered=False,
+                )
+
+                if self._memory_manager.should_summarize():
+                    await asyncio.to_thread(self._memory_manager.create_summary)
+
+            if self._cost_tracker:
+                self._cost_tracker.log_call(
+                    service="openai",
+                    model=self._model,
+                    duration_seconds=time.perf_counter() - started_at,
+                )
+            return reply
 
     async def toggle_recording_and_respond(self) -> Optional[str]:
         """Toggle recording state - starts if stopped, stops and processes if recording.
 
         Best for controller gameplay where holding a button is awkward.
+        PTT mode only.
         """
+        if not self._recorder:
+            logger.warning(
+                "toggle_recording_and_respond called but recorder not available"
+            )
+            return None
+
         pcm_bytes = await asyncio.to_thread(self._recorder.toggle_recording)
 
         # If we got audio bytes back, we just stopped recording - process it
         if pcm_bytes:
             async with self._active_lock:
                 started_at = time.perf_counter()
+                if not self._transcriber:
+                    logger.error("Transcriber not available")
+                    return None
+
                 transcript = await asyncio.to_thread(
                     self._transcriber.transcribe_pcm16, pcm_bytes
                 )
@@ -421,12 +510,23 @@ class NonRealtimeVoiceSession:
         return None
 
     async def stop_recording_and_respond(self) -> Optional[str]:
+        """Stop recording and process (PTT mode only)."""
+        if not self._recorder:
+            logger.warning(
+                "stop_recording_and_respond called but recorder not available"
+            )
+            return None
+
         pcm_bytes = await asyncio.to_thread(self._recorder.stop_recording)
         if not pcm_bytes:
             return None
 
         async with self._active_lock:
             started_at = time.perf_counter()
+            if not self._transcriber:
+                logger.error("Transcriber not available")
+                return None
+
             transcript = await asyncio.to_thread(
                 self._transcriber.transcribe_pcm16, pcm_bytes
             )
@@ -460,10 +560,43 @@ class NonRealtimeVoiceSession:
             return reply
 
     def is_recording(self) -> bool:
-        return self._recorder.is_recording()
+        """Check if currently recording (PTT mode only)."""
+        if self._recorder:
+            return self._recorder.is_recording()
+        return False
+
+    def is_transcribing(self) -> bool:
+        """Check if transcription session is active (realtime mode only)."""
+        if self._realtime_transcriber:
+            return self._realtime_transcriber.is_connected()
+        return False
 
     def get_last_response(self) -> Optional[str]:
         return self._last_response
+
+    def _on_vad_speech_stopped(self) -> None:
+        """Callback triggered when VAD detects speech has stopped.
+
+        Automatically submits the buffered transcript to the agent.
+        This runs in the event loop thread, so we need to schedule the async work.
+        """
+        if not self._realtime_transcriber:
+            return
+
+        # Check if there's a transcript to submit
+        transcript = self._realtime_transcriber.get_buffered_transcript()
+        if not transcript:
+            logger.debug("VAD speech stopped but no transcript buffered")
+            return
+
+        logger.info("VAD detected speech stopped, auto-submitting transcript")
+
+        # Schedule the async submit_transcript_and_respond in the event loop
+        try:
+            loop = asyncio.get_event_loop()
+            asyncio.run_coroutine_threadsafe(self.submit_transcript_and_respond(), loop)
+        except Exception as e:
+            logger.error("Failed to schedule auto-submit: %s", e)
 
     async def inject_context(self, context_text: str) -> None:
         reply = await asyncio.to_thread(
@@ -613,8 +746,13 @@ class NonRealtimeVoiceSession:
             return response.choices[0].message.content.strip()
         return ""
 
-    def shutdown(self) -> None:
+    async def shutdown(self) -> None:
         """Shutdown the voice session and flush memory."""
         logger.info("Shutting down voice session, flushing memory...")
+
+        # Stop realtime transcription if active
+        if self._realtime_transcriber and self._realtime_transcriber.is_connected():
+            await self._realtime_transcriber.stop()
+
         self._memory_manager.flush()
         logger.info("Memory flushed, shutdown complete")
