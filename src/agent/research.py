@@ -143,11 +143,15 @@ Synthesize this into a compact research memo that answers the query."""
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_prompt),
             ]
+            logger.info("Synthesizing research memo for query: %s", query[:100])
             response = self._llm.invoke(messages)
             content = response.content
             if isinstance(content, str):
-                return content.strip()
-            return str(content).strip()
+                memo = content.strip()
+            else:
+                memo = str(content).strip()
+            logger.info("Research memo synthesized (%d chars)", len(memo))
+            return memo
         except Exception as e:
             logger.error("Memo synthesis failed: %s", e, exc_info=True)
             # Fallback: return raw results

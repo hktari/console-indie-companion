@@ -603,7 +603,9 @@ async def run_pipeline(args: argparse.Namespace) -> None:
             )
         )
         synthesis_task = asyncio.create_task(
-            context_synthesis_loop(synthesizer, context_mgr)
+            context_synthesis_loop(
+                synthesizer, context_mgr, interval_seconds=args.interval
+            )
         )
 
         # Wait for the main pipeline to finish (e.g. duration limit)

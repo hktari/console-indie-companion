@@ -59,6 +59,7 @@ class RequestPlanner:
         Returns:
             AgentDecision with routing information
         """
+        logger.info("Planning route for transcript: '%s'", transcript[:100])
         # Simple heuristic-based routing for Phase 1
         # Phase 2 will add LLM-based classification if needed
 
@@ -78,12 +79,16 @@ class RequestPlanner:
                 "previously",
             ]
         ):
-            return AgentDecision(
+            decision = AgentDecision(
                 route=RouteType.MEMORY_SEARCH,
                 reasoning="Query references past events or memory",
                 confidence=0.8,
                 tools_to_call=["memory_search"],
             )
+            logger.info(
+                "Decision: %s (Reason: %s)", decision.route.value, decision.reasoning
+            )
+            return decision
 
         # Check for web research indicators
         if any(
@@ -106,19 +111,23 @@ class RequestPlanner:
                 game_term in transcript_lower
                 for game_term in ["tunic", "boss", "enemy", "item", "puzzle", "secret"]
             ):
-                return AgentDecision(
+                decision = AgentDecision(
                     route=RouteType.COMBINED,
                     reasoning="Game-specific query - check KB first, web if needed",
                     confidence=0.7,
                     tools_to_call=["knowledge_base_search"],
                 )
             else:
-                return AgentDecision(
+                decision = AgentDecision(
                     route=RouteType.WEB_RESEARCH,
                     reasoning="General knowledge query requiring web search",
                     confidence=0.7,
                     tools_to_call=["web_search"],
                 )
+            logger.info(
+                "Decision: %s (Reason: %s)", decision.route.value, decision.reasoning
+            )
+            return decision
 
         # Check for knowledge base queries (game-specific)
         if scene and any(
@@ -129,20 +138,30 @@ class RequestPlanner:
                 word in transcript_lower
                 for word in ["what", "where", "how", "this", "that", "here"]
             ):
-                return AgentDecision(
+                decision = AgentDecision(
                     route=RouteType.KNOWLEDGE_BASE,
                     reasoning="Game context query - search knowledge base",
                     confidence=0.75,
                     tools_to_call=["knowledge_base_search"],
                 )
+                logger.info(
+                    "Decision: %s (Reason: %s)",
+                    decision.route.value,
+                    decision.reasoning,
+                )
+                return decision
 
         # Default: direct answer (no retrieval needed)
-        return AgentDecision(
+        decision = AgentDecision(
             route=RouteType.DIRECT_ANSWER,
             reasoning="Simple conversational response, no retrieval needed",
             confidence=0.6,
             tools_to_call=[],
         )
+        logger.info(
+            "Decision: %s (Reason: %s)", decision.route.value, decision.reasoning
+        )
+        return decision
 
     def gather_evidence(
         self,
@@ -164,6 +183,7 @@ class RequestPlanner:
 
         for tool_name in decision.tools_to_call:
             try:
+                logger.info("Executing tool: %s", tool_name)
                 if tool_name == "knowledge_base_search":
                     results = knowledge_base_search.invoke(
                         {"query": query, "game_id": game_id, "qmd_url": self._qmd_url}

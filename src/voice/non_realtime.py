@@ -430,6 +430,7 @@ class NonRealtimeVoiceSession:
             prompt_context = await self._build_prompt_context(transcript)
             reply = await asyncio.to_thread(self._generate_reply, prompt_context)
             if reply:
+                logger.info("Agent response: %s", reply)
                 self._last_response = reply
                 await asyncio.to_thread(self._tts_player.speak, reply)
 
@@ -484,6 +485,7 @@ class NonRealtimeVoiceSession:
                 prompt_context = await self._build_prompt_context(transcript)
                 reply = await asyncio.to_thread(self._generate_reply, prompt_context)
                 if reply:
+                    logger.info("Agent response: %s", reply)
                     self._last_response = reply
                     await asyncio.to_thread(self._tts_player.speak, reply)
 
@@ -537,6 +539,7 @@ class NonRealtimeVoiceSession:
             prompt_context = await self._build_prompt_context(transcript)
             reply = await asyncio.to_thread(self._generate_reply, prompt_context)
             if reply:
+                logger.info("Agent response: %s", reply)
                 self._last_response = reply
                 await asyncio.to_thread(self._tts_player.speak, reply)
 
@@ -604,6 +607,7 @@ class NonRealtimeVoiceSession:
             context_text,
         )
         if reply:
+            logger.info("Agent response (event): %s", reply)
             self._last_response = reply
             await asyncio.to_thread(self._tts_player.speak, reply)
 
