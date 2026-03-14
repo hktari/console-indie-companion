@@ -6,8 +6,7 @@ from src.context.synthesizer import ContextSynthesizer
 
 # --- Setup ---
 logging.basicConfig(
-    level=logging.INFO, 
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 load_dotenv()
 
@@ -58,13 +57,13 @@ def test_synthesis_in_isolation():
         narrative = synthesizer.synthesize(mock_scenes, mock_rag_context)
 
         # 3. Verification
-        print("\n" + "-"*20)
+        print("\n" + "-" * 20)
         logger.info("SYNTHESIZED NARRATIVE:")
         if narrative:
             print(narrative)
         else:
             logger.warning("Synthesis returned an empty narrative.")
-        print("-"*20 + "\n")
+        print("-" * 20 + "\n")
 
     except Exception:
         logger.error("An error occurred during the synthesizer test.", exc_info=True)

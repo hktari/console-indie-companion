@@ -426,9 +426,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     # Note: For non-realtime mode, Exa is now planner-controlled via agent layer
     # For realtime mode, keep Exa in orchestrator for now
     orchestrator = KnowledgeOrchestrator()
-    orchestrator.register_retriever(
-        LocalGameRetriever(qmd_url=os.environ.get("QMD_URL"))
-    )
+    orchestrator.register_retriever(LocalGameRetriever())
     if args.voice_mode == "realtime":
         orchestrator.register_retriever(ExaRetriever())
         logger.info(
@@ -438,9 +436,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
         logger.info(
             "RAG orchestrator initialised with local retriever only (non-realtime uses planner)"
         )
-    orchestrator.register_memory_retriever(
-        MemoryRetriever(qmd_url=os.environ.get("QMD_URL"))
-    )
+    orchestrator.register_memory_retriever(MemoryRetriever())
 
     context_mgr = ContextManager(orchestrator=orchestrator)
     logger.info("Context manager loaded")

@@ -6,7 +6,7 @@ import json
 # Add src to path if needed
 sys.path.append(os.path.abspath("src"))
 
-from rag.qmd_client import QmdMcpStdioClient
+from src.rag.qmd_client import QmdMcpStdioClient
 
 # Configure logging
 logging.basicConfig(

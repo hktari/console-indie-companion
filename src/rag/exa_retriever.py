@@ -34,7 +34,9 @@ class ExaRetriever:
                 "EXA_API_KEY not set. Exa retriever will return empty results."
             )
 
-    def query(self, text: str, game_id: str, n_results: int = 5) -> list[RetrievalResult]:
+    def query(
+        self, text: str, game_id: str, n_results: int = 5
+    ) -> list[RetrievalResult]:
         """Query Exa AI for web search results.
 
         Args:

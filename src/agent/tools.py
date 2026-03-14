@@ -13,7 +13,9 @@ logger = logging.getLogger(__name__)
 
 
 @tool
-def knowledge_base_search(query: str, game_id: str, qmd_url: Optional[str] = None) -> list[RetrievalResult]:
+def knowledge_base_search(
+    query: str, game_id: str, qmd_url: Optional[str] = None
+) -> list[RetrievalResult]:
     """Search the local game knowledge base (QMD collection).
 
     Args:
@@ -25,9 +27,11 @@ def knowledge_base_search(query: str, game_id: str, qmd_url: Optional[str] = Non
         List of retrieval results from the knowledge base
     """
     try:
-        retriever = LocalGameRetriever(qmd_url=qmd_url)
+        retriever = LocalGameRetriever()
         results = retriever.query(query, game_id)
-        logger.info("KB search returned %d results for query: %s", len(results), query[:50])
+        logger.info(
+            "KB search returned %d results for query: %s", len(results), query[:50]
+        )
         return results
     except Exception as e:
         logger.error("Knowledge base search failed: %s", e, exc_info=True)
@@ -35,21 +39,22 @@ def knowledge_base_search(query: str, game_id: str, qmd_url: Optional[str] = Non
 
 
 @tool
-def memory_search(query: str, game_id: str, qmd_url: Optional[str] = None) -> list[RetrievalResult]:
+def memory_search(query: str, game_id: str) -> list[RetrievalResult]:
     """Search conversation memory for past interactions and discoveries.
 
     Args:
         query: Search query text
         game_id: Game identifier (e.g., 'tunic')
-        qmd_url: Optional QMD server URL
 
     Returns:
         List of retrieval results from memory
     """
     try:
-        retriever = MemoryRetriever(qmd_url=qmd_url)
+        retriever = MemoryRetriever()
         results = retriever.query(query, game_id)
-        logger.info("Memory search returned %d results for query: %s", len(results), query[:50])
+        logger.info(
+            "Memory search returned %d results for query: %s", len(results), query[:50]
+        )
         return results[:2]
     except Exception as e:
         logger.debug("Memory search failed: %s", e)
@@ -70,7 +75,9 @@ def web_search(query: str, game_id: str) -> list[RetrievalResult]:
     try:
         retriever = ExaRetriever()
         results = retriever.query(query, game_id)
-        logger.info("Web search returned %d results for query: %s", len(results), query[:50])
+        logger.info(
+            "Web search returned %d results for query: %s", len(results), query[:50]
+        )
         return results
     except Exception as e:
         logger.error("Web search failed: %s", e, exc_info=True)

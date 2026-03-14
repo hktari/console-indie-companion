@@ -30,16 +30,18 @@ def qmd_search(query: str, collection: str | None, limit: int) -> list[dict[str,
         # Build command
         cmd = [
             "qmd",
-            "--index", QMD_INDEX_NAME,
+            "--index",
+            QMD_INDEX_NAME,
             "search",
             query,
             "--json",
-            "-n", str(limit),
+            "-n",
+            str(limit),
         ]
-        
+
         if collection:
             cmd.extend(["-c", collection])
-        
+
         # Execute
         result = subprocess.run(
             cmd,
@@ -48,15 +50,15 @@ def qmd_search(query: str, collection: str | None, limit: int) -> list[dict[str,
             check=True,
             timeout=30.0,
         )
-        
+
         # Parse JSON output
         if result.stdout.strip():
             results = json.loads(result.stdout)
             if isinstance(results, list):
                 return results
-        
+
         return []
-    
+
     except subprocess.CalledProcessError as e:
         logger.error("QMD search failed: %s", e.stderr)
         raise RuntimeError(f"QMD search failed: {e.stderr}")
@@ -77,7 +79,7 @@ def health():
 @app.route("/query", methods=["POST"])
 def query():
     """REST query endpoint compatible with QmdHttpClient.
-    
+
     Request format:
     {
         "searches": [
@@ -87,7 +89,7 @@ def query():
         "collections": ["collection_name"],
         "limit": 5
     }
-    
+
     Response format:
     {
         "results": [
@@ -104,39 +106,41 @@ def query():
     """
     try:
         data = request.get_json()
-        
+
         # Extract parameters
         searches = data.get("searches", [])
         collections = data.get("collections", [])
         limit = data.get("limit", 5)
-        
+
         # Combine search queries (QMD CLI search takes single query)
         query_text = " ".join(s.get("query", "") for s in searches if s.get("query"))
         collection = collections[0] if collections else None
-        
+
         if not query_text:
             return jsonify({"error": "No query provided"}), 400
-        
+
         # Execute search via CLI
         qmd_results = qmd_search(query_text, collection, limit)
-        
+
         # Transform to expected format
         results = []
         for r in qmd_results:
-            results.append({
-                "content": r.get("snippet", ""),
-                "score": r.get("score", 0.0),
-                "file": r.get("file", ""),
-                "docid": r.get("docid", ""),
-                "snippet": r.get("snippet", ""),
-                "metadata": {
-                    "title": r.get("title", ""),
-                    "context": r.get("context", ""),
-                },
-            })
-        
+            results.append(
+                {
+                    "content": r.get("snippet", ""),
+                    "score": r.get("score", 0.0),
+                    "file": r.get("file", ""),
+                    "docid": r.get("docid", ""),
+                    "snippet": r.get("snippet", ""),
+                    "metadata": {
+                        "title": r.get("title", ""),
+                        "context": r.get("context", ""),
+                    },
+                }
+            )
+
         return jsonify({"results": results})
-    
+
     except Exception as e:
         logger.exception("Query failed")
         return jsonify({"error": str(e)}), 500
@@ -148,13 +152,13 @@ def main():
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
     parser.add_argument("--index", default="index", help="QMD index name")
     args = parser.parse_args()
-    
+
     global QMD_INDEX_NAME
     QMD_INDEX_NAME = args.index
-    
+
     logger.info("Starting QMD REST server on %s:%d", args.host, args.port)
     logger.info("Using QMD index: %s", QMD_INDEX_NAME)
-    
+
     # Test QMD availability
     try:
         result = subprocess.run(
@@ -168,7 +172,7 @@ def main():
         logger.error("Failed to check QMD status: %s", e)
         logger.error("Make sure QMD is installed: cargo install qmd")
         return
-    
+
     app.run(host=args.host, port=args.port, debug=False)
 
 
