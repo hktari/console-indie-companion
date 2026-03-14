@@ -93,3 +93,22 @@ class KnowledgeOrchestrator:
         # Sort by confidence descending
         all_results.sort(key=lambda r: r.confidence, reverse=True)
         return all_results
+
+    def shutdown(self) -> None:
+        """Shutdown all registered retrievers."""
+        for retriever in self._retrievers:
+            if hasattr(retriever, "shutdown"):
+                try:
+                    retriever.shutdown()  # type: ignore[attr-defined]
+                except Exception as e:
+                    logger.warning(
+                        "Error shutting down retriever %s: %s",
+                        type(retriever).__name__,
+                        e,
+                    )
+
+        if self._memory_retriever and hasattr(self._memory_retriever, "shutdown"):
+            try:
+                self._memory_retriever.shutdown()  # type: ignore[attr-defined]
+            except Exception as e:
+                logger.warning("Error shutting down memory retriever: %s", e)

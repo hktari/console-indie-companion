@@ -72,3 +72,8 @@ class LocalGameRetriever:
         except Exception as e:
             logger.error("QMD retrieval failed for '%s': %s", text, e, exc_info=True)
             return []
+
+    def shutdown(self) -> None:
+        """Shutdown the QMD client."""
+        if hasattr(self._client, "shutdown"):
+            self._client.shutdown()

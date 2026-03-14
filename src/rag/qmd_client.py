@@ -54,6 +54,7 @@ class QmdMcpStdioClient:
         self.index_name = index_name
         self._process = None
         self._id_counter = 0
+        self._started = False
 
     def _start(self):
         if self._process is not None:
@@ -68,6 +69,7 @@ class QmdMcpStdioClient:
             text=True,
             bufsize=1,
         )
+        self._started = True
 
         # Send initialize request
         self._call(
@@ -168,6 +170,24 @@ class QmdMcpStdioClient:
             for r in results
         ]
 
+    def shutdown(self):
+        """Properly shutdown the QMD MCP process."""
+        if self._process is not None:
+            logger.debug("Shutting down QMD MCP process (index=%s)", self.index_name)
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                logger.warning("QMD process did not terminate, killing it")
+                self._process.kill()
+                self._process.wait()
+            except Exception as e:
+                logger.warning("Error shutting down QMD process: %s", e)
+            finally:
+                self._process = None
+                self._started = False
+
     def __del__(self):
-        if self._process:
-            self._process.terminate()
+        """Cleanup on garbage collection (fallback only)."""
+        if self._started:
+            self.shutdown()

@@ -82,3 +82,8 @@ class MemoryRetriever:
         except Exception as e:
             logger.debug("Memory retrieval failed for '%s': %s", text, e)
             return []
+
+    def shutdown(self) -> None:
+        """Shutdown the QMD client."""
+        if hasattr(self._client, "shutdown"):
+            self._client.shutdown()

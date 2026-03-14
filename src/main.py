@@ -19,7 +19,6 @@ import logging
 import os
 import signal
 import sys
-import threading
 from typing import Any, Optional, Union
 
 from dotenv import load_dotenv
@@ -73,8 +72,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--interval",
         type=float,
-        default=0.0,  # gemini-2.5-flash-lite has around 2s latency anyway
-        help="Screenshot interval in seconds (default: 3).",
+        default=15.0,  # gemini-2.5-flash-lite has around 2s latency anyway
+        help="Screenshot interval in seconds (default: 15).",
     )
     parser.add_argument(
         "--replay",
@@ -105,8 +104,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--ptt-key",
-        default="ctrl",
-        help="Push-to-talk key for non-realtime mode (default: ctrl).",
+        default="shift_r",
+        help="Push-to-talk key for non-realtime mode (default: shift_r).",
     )
     parser.add_argument(
         "--model",
@@ -176,10 +175,23 @@ def fetch_rag_context(scene: dict) -> str:
 
 def setup_key_listener(
     voice_session: Any, loop: asyncio.AbstractEventLoop, ptt_key: str
-) -> None:
-    """Setup and run a non-blocking keyboard listener."""
+) -> keyboard.Listener:
+    """Setup and run a non-blocking keyboard listener.
+
+    Supports both push-to-talk (hold) and toggle (press) modes.
+    Toggle mode is detected automatically from voice_session._recorder.mode.
+
+    Returns the listener instance so it can be stopped during shutdown.
+    """
 
     target_key = ptt_key.lower()
+
+    # Detect if voice session is in toggle mode
+    is_toggle_mode = (
+        hasattr(voice_session, "_recorder")
+        and hasattr(voice_session._recorder, "mode")
+        and voice_session._recorder.mode == "toggle"
+    )
 
     def _key_matches(key: keyboard.Key | keyboard.KeyCode | None) -> bool:
         if key is None:
@@ -194,19 +206,43 @@ def setup_key_listener(
         if not _key_matches(key):
             return
 
-        if (
-            hasattr(voice_session, "start_recording")
-            and not voice_session.is_recording()
-        ):
-            try:
-                voice_session.start_recording()
-            except Exception:
-                logger.exception("Failed to start push-to-talk recording")
+        if is_toggle_mode:
+            # Toggle mode: single press toggles recording on/off
+            if hasattr(voice_session, "toggle_recording_and_respond"):
+                future = asyncio.run_coroutine_threadsafe(
+                    voice_session.toggle_recording_and_respond(),
+                    loop,
+                )
+
+                def _done_callback(result_future):
+                    try:
+                        reply = result_future.result()
+                        if reply:
+                            logger.info("Assistant: %s", reply)
+                    except Exception:
+                        logger.exception("Toggle response failed")
+
+                future.add_done_callback(_done_callback)
+        else:
+            # Push-to-talk mode: press to start
+            if (
+                hasattr(voice_session, "start_recording")
+                and not voice_session.is_recording()
+            ):
+                try:
+                    voice_session.start_recording()
+                except Exception:
+                    logger.exception("Failed to start push-to-talk recording")
 
     def on_release(key: keyboard.Key | keyboard.KeyCode | None) -> None:
         if not _key_matches(key):
             return
 
+        # In toggle mode, ignore release events
+        if is_toggle_mode:
+            return
+
+        # Push-to-talk mode: release to stop
         if (
             hasattr(voice_session, "stop_recording_and_respond")
             and voice_session.is_recording()
@@ -226,10 +262,11 @@ def setup_key_listener(
 
             future.add_done_callback(_done_callback)
 
+    mode_name = "toggle" if is_toggle_mode else "push-to-talk"
     # The listener runs in its own thread, so it's non-blocking
-    with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
-        logger.info("Key listener started for push-to-talk key '%s'.", ptt_key)
-        listener.join()
+    listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+    logger.info("Key listener started for '%s' key (%s mode).", ptt_key, mode_name)
+    return listener
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +506,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
                 orchestrator=orchestrator,
                 cost_tracker=cost_tracker,
                 system_instructions=SYSTEM_INSTRUCTIONS,
+                recorder_mode="toggle",
                 qmd_url=os.environ.get("QMD_URL"),
             )
             logger.info("Non-realtime voice session created with planner")
@@ -480,14 +518,12 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     capture.start()
 
     # -- 3. Start voice session -----------------------------------------
+    key_listener: Optional[keyboard.Listener] = None
     if voice:
         # Start keybind listener in a separate thread
-        key_listener_thread = threading.Thread(
-            target=setup_key_listener,
-            args=(voice, loop, args.ptt_key),
-            daemon=True,
-        )
-        key_listener_thread.start()
+        key_listener = setup_key_listener(voice, loop, args.ptt_key)
+        key_listener.start()
+        logger.info("Key listener thread started")
 
         if args.voice_mode == "realtime":
             try:
@@ -505,7 +541,14 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     try:
         main_task = asyncio.create_task(
             main_pipeline(
-                args, capture, vlm, context_mgr, cost_tracker, detector_engine, voice
+                args,
+                capture,
+                vlm,
+                context_mgr,
+                cost_tracker,
+                detector_engine,
+                voice,
+                args.interval,
             )
         )
         synthesis_task = asyncio.create_task(
@@ -553,6 +596,12 @@ async def run_pipeline(args: argparse.Namespace) -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
 
     # -- 5. Cleanup -----------------------------------------------------
+    # Stop the keyboard listener first to unblock its thread
+    if key_listener is not None and key_listener.is_alive():
+        logger.info("Stopping keyboard listener...")
+        key_listener.stop()
+        logger.info("Keyboard listener stopped")
+
     capture.stop()
     if voice:
         if args.voice_mode == "realtime":
@@ -565,6 +614,14 @@ async def run_pipeline(args: argparse.Namespace) -> None:
                 voice.shutdown()
             except Exception:
                 logger.exception("Error shutting down voice session")
+
+    # Shutdown orchestrator and all QMD clients
+    try:
+        orchestrator.shutdown()
+        logger.debug("Orchestrator shutdown complete")
+    except Exception:
+        logger.exception("Error shutting down orchestrator")
+
     logger.info("Shutdown complete")
     logger.info(cost_tracker.get_summary_string())
 
