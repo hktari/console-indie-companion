@@ -5,10 +5,11 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import openai
 
+from src.agent.job_manager import ResearchJob, ResearchJobManager
 from src.agent.models import EvidenceBundle
 from src.agent.planner import RequestPlanner
 from src.context.manager import ContextManager
@@ -45,6 +46,7 @@ class AgentPipeline:
         self,
         context_manager: ContextManager,
         orchestrator: KnowledgeOrchestrator,
+        job_manager: ResearchJobManager,
         system_instructions: str = SYSTEM_INSTRUCTIONS,
         model: str = "gpt-4.1-mini",
         game_id: str = "tunic",
@@ -53,6 +55,7 @@ class AgentPipeline:
         api_key: Optional[str] = None,
         cost_tracker: Optional[Any] = None,
         on_research_start: Optional[Any] = None,
+        on_research_complete: Optional[Callable[[str], None]] = None,
     ) -> None:
         self._context_manager = context_manager
         self._orchestrator = orchestrator
@@ -60,6 +63,9 @@ class AgentPipeline:
         self._model = model
         self._game_id = game_id
         self._cost_tracker = cost_tracker
+        self._job_manager = job_manager
+        self._on_research_complete_tts = on_research_complete
+        self._tts_lock = asyncio.Lock()
 
         api_key = api_key or openai.api_key
         if not api_key:
@@ -69,6 +75,7 @@ class AgentPipeline:
 
         # Initialize planner for routing decisions
         self._planner = RequestPlanner(
+            job_manager=job_manager,
             qmd_url=qmd_url,
             model=model,
             api_key=api_key,
@@ -170,6 +177,31 @@ class AgentPipeline:
         """Flush conversation memory to disk."""
         self._memory_manager.flush()
 
+    async def _on_research_complete(self, job: ResearchJob) -> None:
+        """Handle research job completion with TTS notification.
+
+        Args:
+            job: Completed research job
+        """
+        if not job.result or not job.result.research_memo:
+            logger.warning("Research job %s completed without result", job.job_id[:8])
+            return
+
+        async with self._tts_lock:
+            if self._on_research_complete_tts:
+                memo_preview = job.result.research_memo[:150]
+                notification = f"Regarding your question: {memo_preview}"
+                logger.info(
+                    "Notifying user of research completion: %s", notification[:50]
+                )
+                try:
+                    if asyncio.iscoroutinefunction(self._on_research_complete_tts):
+                        await self._on_research_complete_tts(notification)
+                    else:
+                        self._on_research_complete_tts(notification)
+                except Exception as e:
+                    logger.error("Research completion TTS failed: %s", e, exc_info=True)
+
     async def _build_prompt_context(
         self,
         transcript: str,
@@ -220,8 +252,13 @@ class AgentPipeline:
                     else transcript
                 )
                 with self._perf.measure("planner.gather_evidence", log_threshold=3.0):
-                    evidence = await asyncio.to_thread(
-                        self._planner.gather_evidence, decision, query, self._game_id
+                    evidence = await self._planner.gather_evidence_async(
+                        decision=decision,
+                        query=query,
+                        game_id=self._game_id,
+                        transcript=transcript,
+                        scene=scene,
+                        on_research_complete=self._on_research_complete,
                     )
                 logger.info(
                     "Evidence gathered: %d KB results, %d memory results, sources: %s",

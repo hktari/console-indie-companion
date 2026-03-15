@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
+from src.agent.job_manager import ResearchJobManager
+from src.agent.research import ResearchSubagent
 from src.context.manager import ContextManager
 from src.prompts.tunic_companion import SYSTEM_INSTRUCTIONS
 from src.rag.orchestrator import KnowledgeOrchestrator
@@ -57,10 +59,23 @@ class PTTVoiceSession:
             voice=tts_voice,
         )
 
+        # Initialize research subagent for iterative research
+        self._research_subagent = ResearchSubagent(
+            qmd_url=qmd_url,
+            model=model,
+            api_key=api_key,
+        )
+
+        # Initialize research job manager with iterative research executor
+        self._job_manager = ResearchJobManager(
+            research_executor=self._research_subagent.research_iterative,
+        )
+
         # Initialize agent pipeline
         self._agent = AgentPipeline(
             context_manager=context_manager,
             orchestrator=orchestrator,
+            job_manager=self._job_manager,
             system_instructions=system_instructions,
             model=model,
             game_id=game_id,
@@ -69,6 +84,7 @@ class PTTVoiceSession:
             api_key=api_key,
             cost_tracker=cost_tracker,
             on_research_start=lambda: self._tts_player.speak("Let me look that up."),
+            on_research_complete=lambda text: self._tts_player.speak(text),
         )
 
         # Initialize PTT recorder and transcriber
@@ -152,8 +168,22 @@ class PTTVoiceSession:
         """Get the last agent response."""
         return self._last_response
 
+    async def initialize_job_manager(self) -> None:
+        """Start the research job manager workers.
+
+        This should be called after the session is created but before use.
+        """
+        logger.info("Starting research job manager workers...")
+        await self._job_manager.start()
+        logger.info("Research job manager started")
+
     async def shutdown(self) -> None:
         """Shutdown the voice session and flush memory."""
         logger.info("Shutting down PTT voice session, flushing memory...")
         self._agent.flush_memory()
+
+        # Stop job manager
+        logger.info("Stopping research job manager...")
+        await self._job_manager.stop()
+
         logger.info("Memory flushed, shutdown complete")

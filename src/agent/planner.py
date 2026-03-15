@@ -6,8 +6,8 @@ from typing import Any, Callable, Optional
 
 import openai
 
+from src.agent.job_manager import ResearchJobManager
 from src.agent.models import AgentDecision, EvidenceBundle, RouteType
-from src.agent.research import ResearchSubagent
 from src.agent.tools import knowledge_base_search, memory_search
 from src.utils.performance import get_performance_tracker
 
@@ -19,6 +19,7 @@ class RequestPlanner:
 
     def __init__(
         self,
+        job_manager: ResearchJobManager,
         qmd_url: Optional[str] = None,
         model: str = "gpt-4.1-mini",
         api_key: Optional[str] = None,
@@ -27,6 +28,7 @@ class RequestPlanner:
         """Initialize the request planner.
 
         Args:
+            job_manager: ResearchJobManager for async research (required)
             qmd_url: QMD server URL for retrieval
             model: OpenAI model for classification
             api_key: OpenAI API key
@@ -40,13 +42,7 @@ class RequestPlanner:
         self._client = openai.OpenAI(api_key=self._api_key)
         self._perf = get_performance_tracker()
         self._on_research_start = on_research_start
-
-        # Initialize research subagent for web research delegation
-        self._research_subagent = ResearchSubagent(
-            qmd_url=qmd_url,
-            model=model,
-            api_key=self._api_key,
-        )
+        self._job_manager = job_manager
 
     def plan(
         self,
@@ -69,6 +65,29 @@ class RequestPlanner:
         # Phase 2 will add LLM-based classification if needed
 
         transcript_lower = transcript.lower()
+
+        # Check for iterative research triggers
+        if any(
+            phrase in transcript_lower
+            for phrase in [
+                "look this up",
+                "look up online",
+                "research",
+                "find information about",
+                "deep dive",
+            ]
+        ):
+            decision = AgentDecision(
+                route=RouteType.ITERATIVE_RESEARCH,
+                reasoning="Query requires iterative research with multiple sources",
+                confidence=0.85,
+                tools_to_call=["iterative_research"],
+                metadata={"timeout": 120, "enable_progress": True},
+            )
+            logger.info(
+                "Decision: %s (Reason: %s)", decision.route.value, decision.reasoning
+            )
+            return decision
 
         # Check for memory-related queries
         if any(
@@ -168,21 +187,27 @@ class RequestPlanner:
         )
         return decision
 
-    def gather_evidence(
+    async def gather_evidence_async(
         self,
         decision: AgentDecision,
         query: str,
         game_id: str,
+        transcript: str,
+        scene: Optional[dict[str, Any]] = None,
+        on_research_complete: Optional[Callable] = None,
     ) -> EvidenceBundle:
-        """Execute the planned tools and gather evidence.
+        """Execute planned tools with async research delegation.
 
         Args:
             decision: Routing decision from planner
             query: Query text for retrieval
             game_id: Game identifier
+            transcript: Full user transcript
+            scene: Optional scene context
+            on_research_complete: Callback for research completion
 
         Returns:
-            EvidenceBundle with collected results
+            EvidenceBundle with sync results and job_id for async research
         """
         bundle = EvidenceBundle()
 
@@ -215,21 +240,21 @@ class RequestPlanner:
                     bundle.memory_results = results[:2]
                     bundle.sources.append("memory")
 
-                elif tool_name == "web_search":
-                    # Notify user before starting research
+                elif tool_name == "web_search" or tool_name == "iterative_research":
+                    # Queue async iterative research
+                    logger.info("Queueing async iterative research job")
                     if self._on_research_start:
                         self._on_research_start()
-
-                    # Delegate to research subagent for isolated web research
-                    logger.info("Delegating to research subagent for web research")
-                    with self._perf.measure("tool.web_search", log_threshold=2.0):
-                        research_memo = self._research_subagent.research(
-                            query=query,
-                            game_id=game_id,
-                            use_web=True,
-                        )
-                    bundle.research_memo = research_memo
-                    bundle.sources.append("web_research")
+                    job_id = await self._job_manager.queue_research(
+                        query=query,
+                        transcript=transcript,
+                        game_id=game_id,
+                        scene=scene,
+                        on_complete=on_research_complete,
+                    )
+                    bundle.job_id = job_id
+                    bundle.sources.append("iterative_research_pending")
+                    logger.info("Research job queued: %s", job_id[:8])
 
             except Exception as e:
                 logger.error("Tool %s failed: %s", tool_name, e, exc_info=True)

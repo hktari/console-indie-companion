@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
+from src.agent.job_manager import ResearchJobManager
+from src.agent.research import ResearchSubagent
 from src.context.manager import ContextManager
 from src.prompts.tunic_companion import SYSTEM_INSTRUCTIONS
 from src.rag.orchestrator import KnowledgeOrchestrator
@@ -54,10 +56,23 @@ class RealtimeTranscriptionSession:
             voice=tts_voice,
         )
 
+        # Initialize research subagent for iterative research
+        self._research_subagent = ResearchSubagent(
+            qmd_url=qmd_url,
+            model=model,
+            api_key=api_key,
+        )
+
+        # Initialize research job manager with iterative research executor
+        self._job_manager = ResearchJobManager(
+            research_executor=self._research_subagent.research_iterative,
+        )
+
         # Initialize agent pipeline
         self._agent = AgentPipeline(
             context_manager=context_manager,
             orchestrator=orchestrator,
+            job_manager=self._job_manager,
             system_instructions=system_instructions,
             model=model,
             game_id=game_id,
@@ -66,6 +81,7 @@ class RealtimeTranscriptionSession:
             api_key=api_key,
             cost_tracker=cost_tracker,
             on_research_start=lambda: self._tts_player.speak("Let me look that up."),
+            on_research_complete=lambda msg: self._tts_player.speak(msg),
         )
 
         # Initialize realtime transcriber with auto-submit callback on speech_stopped
@@ -79,11 +95,13 @@ class RealtimeTranscriptionSession:
 
     async def start_transcription(self) -> None:
         """Start the transcription session."""
+        await self._job_manager.start()
         await self._realtime_transcriber.start()
 
     async def stop_transcription(self) -> None:
         """Stop the transcription session."""
         await self._realtime_transcriber.stop()
+        await self._job_manager.stop()
 
     async def submit_transcript_and_respond(self) -> Optional[str]:
         """Submit buffered transcript to agent.
@@ -155,6 +173,9 @@ class RealtimeTranscriptionSession:
         # Stop realtime transcription if active
         if self._realtime_transcriber and self._realtime_transcriber.is_connected():
             await self._realtime_transcriber.stop()
+
+        # Stop job manager
+        await self._job_manager.stop()
 
         self._agent.flush_memory()
         logger.info("Memory flushed, shutdown complete")
