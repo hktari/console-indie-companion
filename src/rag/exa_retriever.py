@@ -57,6 +57,7 @@ class ExaRetriever:
             try:
                 import openai
 
+                # TODO: should think about passing synthesized context as well
                 client = openai.OpenAI(api_key=self.openai_api_key)
                 prompt = f"""You are an expert search query optimizer for the game '{game_id}'.
 User Query: {text}

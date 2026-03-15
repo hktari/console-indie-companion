@@ -38,8 +38,8 @@ class ResearchSubagent:
 
         # Use LangChain for cleaner message handling
         self._llm = ChatOpenAI(
-            model="gpt-5",
-            reasoning="low",
+            model="gpt-4.1",
+            # reasoning={"effort": "low"},
             api_key=self._api_key,  # type: ignore
             temperature=0.3,
         )

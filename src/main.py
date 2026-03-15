@@ -27,8 +27,8 @@ from pynput import keyboard
 from src.capture.capture import CaptureService
 from src.capture.replay import ReplayCapture
 from src.vlm.analyze import SceneAnalyzer
-from src.voice.non_realtime import NonRealtimeVoiceSession
-from src.voice.realtime import VoiceSession
+from src.voice.sessions.ptt import PTTVoiceSession
+from src.voice.sessions.realtime_transcription import RealtimeTranscriptionSession
 from src.utils import CostTracker, get_performance_tracker
 from src.utils.logging_config import setup_logging
 
@@ -38,7 +38,7 @@ from src.context.manager import ContextManager
 from src.context.synthesizer import ContextSynthesizer
 from src.detector.engine import DetectorEngine
 from src.memory.retriever import MemoryRetriever
-from src.rag import ExaRetriever, KnowledgeOrchestrator, LocalGameRetriever
+from src.rag import KnowledgeOrchestrator, LocalGameRetriever
 
 # RAG may not be indexed yet — import but handle failures gracefully.
 try:
@@ -97,16 +97,10 @@ def parse_args() -> argparse.Namespace:
         help="Skip voice session (useful for testing VLM pipeline only).",
     )
     parser.add_argument(
-        "--voice-mode",
-        default="non-realtime",
-        choices=["non-realtime", "realtime"],
-        help="Voice interaction mode (default: non-realtime).",
-    )
-    parser.add_argument(
         "--input-mode",
         default="ptt",
         choices=["ptt", "realtime"],
-        help="Input mode for non-realtime voice: ptt (push-to-talk) or realtime (continuous transcription with manual submit). Default: ptt.",
+        help="Input mode: ptt (push-to-talk) or realtime (continuous transcription with manual submit). Default: ptt.",
     )
     parser.add_argument(
         "--ptt-key",
@@ -184,27 +178,18 @@ def setup_key_listener(
 ) -> keyboard.Listener:
     """Setup and run a non-blocking keyboard listener.
 
-    Supports three modes:
-    - push-to-talk: Hold to record, release to stop and transcribe
-    - toggle: Press once to start, press again to stop and transcribe
-    - realtime: Press to submit buffered transcript to agent
+    Supports two session types:
+    - PTTVoiceSession: Toggle mode (press once to start, press again to stop)
+    - RealtimeTranscriptionSession: Press to submit buffered transcript
 
     Returns the listener instance so it can be stopped during shutdown.
     """
 
     target_key = ptt_key.lower()
 
-    # Detect input mode
-    is_realtime_mode = (
-        hasattr(voice_session, "_input_mode")
-        and voice_session._input_mode == "realtime"
-    )
-
-    is_toggle_mode = (
-        hasattr(voice_session, "_recorder")
-        and hasattr(voice_session._recorder, "mode")
-        and voice_session._recorder.mode == "toggle"
-    )
+    # Detect session type
+    is_realtime_session = isinstance(voice_session, RealtimeTranscriptionSession)
+    is_ptt_session = isinstance(voice_session, PTTVoiceSession)
 
     def _key_matches(key: keyboard.Key | keyboard.KeyCode | None) -> bool:
         if key is None:
@@ -219,66 +204,10 @@ def setup_key_listener(
         if not _key_matches(key):
             return
 
-        if is_realtime_mode:
-            # Realtime mode: press to submit buffered transcript to agent
-            if hasattr(voice_session, "submit_transcript_and_respond"):
-                future = asyncio.run_coroutine_threadsafe(
-                    voice_session.submit_transcript_and_respond(),
-                    loop,
-                )
-
-                def _done_callback(result_future):
-                    try:
-                        reply = result_future.result()
-                        if reply:
-                            logger.info("Assistant: %s", reply)
-                    except Exception:
-                        logger.exception("Realtime submit response failed")
-
-                future.add_done_callback(_done_callback)
-        elif is_toggle_mode:
-            # Toggle mode: single press toggles recording on/off
-            if hasattr(voice_session, "toggle_recording_and_respond"):
-                future = asyncio.run_coroutine_threadsafe(
-                    voice_session.toggle_recording_and_respond(),
-                    loop,
-                )
-
-                def _done_callback(result_future):
-                    try:
-                        reply = result_future.result()
-                        if reply:
-                            logger.info("Assistant: %s", reply)
-                    except Exception:
-                        logger.exception("Toggle response failed")
-
-                future.add_done_callback(_done_callback)
-        else:
-            # Push-to-talk mode: press to start
-            if (
-                hasattr(voice_session, "start_recording")
-                and not voice_session.is_recording()
-            ):
-                try:
-                    voice_session.start_recording()
-                except Exception:
-                    logger.exception("Failed to start push-to-talk recording")
-
-    def on_release(key: keyboard.Key | keyboard.KeyCode | None) -> None:
-        if not _key_matches(key):
-            return
-
-        # In toggle or realtime mode, ignore release events
-        if is_toggle_mode or is_realtime_mode:
-            return
-
-        # Push-to-talk mode: release to stop
-        if (
-            hasattr(voice_session, "stop_recording_and_respond")
-            and voice_session.is_recording()
-        ):
+        if is_realtime_session:
+            # Realtime transcription: press to submit buffered transcript
             future = asyncio.run_coroutine_threadsafe(
-                voice_session.stop_recording_and_respond(),
+                voice_session.submit_transcript_and_respond(),
                 loop,
             )
 
@@ -288,17 +217,31 @@ def setup_key_listener(
                     if reply:
                         logger.info("Assistant: %s", reply)
                 except Exception:
-                    logger.exception("Push-to-talk response failed")
+                    logger.exception("Realtime submit response failed")
+
+            future.add_done_callback(_done_callback)
+        elif is_ptt_session:
+            # PTT toggle mode: single press toggles recording on/off
+            future = asyncio.run_coroutine_threadsafe(
+                voice_session.toggle_recording_and_respond(),
+                loop,
+            )
+
+            def _done_callback(result_future):
+                try:
+                    reply = result_future.result()
+                    if reply:
+                        logger.info("Assistant: %s", reply)
+                except Exception:
+                    logger.exception("PTT toggle response failed")
 
             future.add_done_callback(_done_callback)
 
-    if is_realtime_mode:
-        mode_name = "realtime-transcription"
-    elif is_toggle_mode:
-        mode_name = "toggle"
-    else:
-        mode_name = "push-to-talk"
-    # The listener runs in its own thread, so it's non-blocking
+    def on_release(key: keyboard.Key | keyboard.KeyCode | None) -> None:
+        # Both modes use press-only (no release handling needed)
+        pass
+
+    mode_name = "realtime-transcription" if is_realtime_session else "ptt-toggle"
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     logger.info("Key listener started for '%s' key (%s mode).", ptt_key, mode_name)
     return listener
@@ -495,19 +438,10 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     logger.info("VLM (Gemini) initialised")
 
     # Initialize RAG orchestrator
-    # Note: For non-realtime mode, Exa is now planner-controlled via agent layer
-    # For realtime mode, keep Exa in orchestrator for now
+    # Note: Exa is now planner-controlled via agent layer (used by both PTT and realtime modes)
     orchestrator = KnowledgeOrchestrator()
     orchestrator.register_retriever(LocalGameRetriever())
-    if args.voice_mode == "realtime":
-        orchestrator.register_retriever(ExaRetriever())
-        logger.info(
-            "RAG orchestrator initialised with local + Exa retrievers (realtime mode)"
-        )
-    else:
-        logger.info(
-            "RAG orchestrator initialised with local retriever only (non-realtime uses planner)"
-        )
+    logger.info("RAG orchestrator initialised with local retriever (Exa via planner)")
     orchestrator.register_memory_retriever(MemoryRetriever())
 
     context_mgr = ContextManager(orchestrator=orchestrator)
@@ -525,16 +459,8 @@ async def run_pipeline(args: argparse.Namespace) -> None:
 
     voice: Optional[Any] = None
     if not args.no_voice:
-        if args.voice_mode == "realtime":
-            voice = VoiceSession(
-                system_instructions=SYSTEM_INSTRUCTIONS,
-                cost_tracker=cost_tracker,
-                context_manager=context_mgr,
-                synthesizer=synthesizer,
-            )
-            logger.info("Realtime voice session created")
-        else:
-            voice = NonRealtimeVoiceSession(
+        if args.input_mode == "ptt":
+            voice = PTTVoiceSession(
                 frame_provider=capture,
                 scene_analyzer=vlm,
                 context_manager=context_mgr,
@@ -543,14 +469,19 @@ async def run_pipeline(args: argparse.Namespace) -> None:
                 system_instructions=SYSTEM_INSTRUCTIONS,
                 recorder_mode="toggle",
                 qmd_url=os.environ.get("QMD_URL"),
-                input_mode=args.input_mode,
             )
-            if args.input_mode == "realtime":
-                logger.info(
-                    "Non-realtime voice session created with realtime transcription input"
-                )
-            else:
-                logger.info("Non-realtime voice session created with PTT input")
+            logger.info("PTT voice session created (toggle mode)")
+        else:  # realtime
+            voice = RealtimeTranscriptionSession(
+                frame_provider=capture,
+                scene_analyzer=vlm,
+                context_manager=context_mgr,
+                orchestrator=orchestrator,
+                cost_tracker=cost_tracker,
+                system_instructions=SYSTEM_INSTRUCTIONS,
+                qmd_url=os.environ.get("QMD_URL"),
+            )
+            logger.info("Realtime transcription session created")
 
     # -- 2. Start capture ------------------------------------------------
     if not capture.find_window():
@@ -566,17 +497,8 @@ async def run_pipeline(args: argparse.Namespace) -> None:
         key_listener.start()
         logger.info("Key listener thread started")
 
-        if args.voice_mode == "realtime":
-            try:
-                await voice.start()
-                logger.info("Voice session connected")
-            except Exception:
-                logger.exception(
-                    "Failed to start voice session — continuing without voice"
-                )
-                voice = None
-        elif args.input_mode == "realtime":
-            # Start realtime transcription for non-realtime voice mode
+        if args.input_mode == "realtime":
+            # Start realtime transcription session
             try:
                 await voice.start_transcription()
                 logger.info("Realtime transcription started")
@@ -585,6 +507,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
                     "Failed to start realtime transcription — continuing without voice"
                 )
                 voice = None
+        # PTT session doesn't need async start
 
     # -- 4. Start main pipeline & synthesis loop ------------------------
     main_task = None
@@ -657,16 +580,10 @@ async def run_pipeline(args: argparse.Namespace) -> None:
 
     capture.stop()
     if voice:
-        if args.voice_mode == "realtime":
-            try:
-                await voice.stop()
-            except Exception:
-                logger.exception("Error stopping voice session")
-        else:
-            try:
-                voice.shutdown()
-            except Exception:
-                logger.exception("Error shutting down voice session")
+        try:
+            await voice.shutdown()
+        except Exception:
+            logger.exception("Error shutting down voice session")
 
     # Shutdown orchestrator and all QMD clients
     try:
