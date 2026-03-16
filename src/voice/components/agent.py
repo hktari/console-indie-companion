@@ -182,6 +182,9 @@ class AgentPipeline:
 
         Args:
             job: Completed research job
+                assistant_response=reply,
+                scene_context=None,
+                is_event_triggered=True,
         """
         if not job.result or not job.result.research_memo:
             logger.warning("Research job %s completed without result", job.job_id[:8])
@@ -208,72 +211,16 @@ class AgentPipeline:
         frame_provider: Any,
         scene_analyzer: Any,
     ) -> PromptContext:
-        """Build context for prompt generation."""
-        with self._perf.measure("context.capture_frame", log_threshold=0.5):
-            frame = frame_provider.capture_once()
-            if frame is None:
-                frame = frame_provider.get_latest_frame()
+        """Build minimal context for fast initial response (transcript only).
 
-        scene: Optional[dict[str, Any]] = None
-        if frame is not None:
-            try:
-                with self._perf.measure("context.vlm_analysis", log_threshold=2.0):
-                    scene = await asyncio.to_thread(
-                        scene_analyzer.analyze_screenshot, frame, "image/jpeg"
-                    )
-                if scene and isinstance(scene, dict) and "error" not in scene:
-                    self._context_manager.update_scene(scene)
-                else:
-                    scene = None
-            except Exception:
-                logger.exception("Prompt-time VLM analysis failed")
-                scene = None
-
-        narrative = self._context_manager.get_current_narrative()
-
-        # Use planner to decide routing and gather evidence
-        evidence = EvidenceBundle()
-        try:
-            with self._perf.measure("planner.plan", log_threshold=0.5):
-                decision = await asyncio.to_thread(
-                    self._planner.plan, transcript, scene, narrative
-                )
-            logger.info(
-                "Planner decision: %s (confidence: %.2f) - %s",
-                decision.route.value,
-                decision.confidence,
-                decision.reasoning,
-            )
-
-            if decision.tools_to_call:
-                query = (
-                    self._build_retrieval_query(transcript, scene)
-                    if scene
-                    else transcript
-                )
-                with self._perf.measure("planner.gather_evidence", log_threshold=3.0):
-                    evidence = await self._planner.gather_evidence_async(
-                        decision=decision,
-                        query=query,
-                        game_id=self._game_id,
-                        transcript=transcript,
-                        scene=scene,
-                        on_research_complete=self._on_research_complete,
-                    )
-                logger.info(
-                    "Evidence gathered: %d KB results, %d memory results, sources: %s",
-                    len(evidence.kb_results),
-                    len(evidence.memory_results),
-                    ", ".join(evidence.sources),
-                )
-        except Exception:
-            logger.exception("Planner execution failed, continuing without evidence")
-
+        VLM analysis, narrative, and evidence gathering are skipped for speed.
+        Agent can request these via tools if needed for follow-up responses.
+        """
         return PromptContext(
             transcript=transcript,
-            scene=scene,
-            narrative=narrative,
-            evidence=evidence,
+            scene=None,
+            narrative="",
+            evidence=EvidenceBundle(),
         )
 
     def _build_retrieval_query(self, transcript: str, scene: dict[str, Any]) -> str:
@@ -287,38 +234,12 @@ class AgentPipeline:
         return " ".join(bit for bit in scene_bits if bit and bit != "None")
 
     def _generate_reply(self, prompt_context: PromptContext) -> str:
-        """Generate LLM reply from prompt context."""
-        scene_text = "No fresh scene analysis available."
-        if prompt_context.scene:
-            scene = prompt_context.scene
-            scene_text = (
-                f"Scene description: {scene.get('description', 'unknown')}\n"
-                f"Location: {scene.get('location', 'unknown')}\n"
-                f"Activity: {scene.get('activity', 'unknown')}\n"
-                f"Visible enemies: {scene.get('enemies', 'none')}\n"
-                f"Player health: {scene.get('health_status', 'unknown')}\n"
-                f"UI elements: {scene.get('ui_elements', 'none')}\n"
-                f"Notable items: {scene.get('notable_items', 'none')}"
-            )
+        """Generate LLM reply from minimal prompt context (transcript only).
 
-        retrieval_text = "No additional retrieval context."
-        if prompt_context.evidence.has_evidence():
-            all_results = prompt_context.evidence.get_all_results()
-            if all_results:
-                retrieval_text = "\n\n".join(
-                    f"[{result.source}]\n{result.content}" for result in all_results[:3]
-                )
-            if prompt_context.evidence.research_memo:
-                retrieval_text = (
-                    f"Research findings:\n{prompt_context.evidence.research_memo}"
-                )
-
-        user_prompt = (
-            f"Player said: {prompt_context.transcript}\n\n"
-            f"Recent narrative: {prompt_context.narrative}\n\n"
-            f"{scene_text}\n\n"
-            f"Retrieved knowledge:\n{retrieval_text}"
-        )
+        Scene analysis, narrative, and retrieval context are not included
+        for fast initial response. Agent can request these via tools if needed.
+        """
+        user_prompt = f"Player said: {prompt_context.transcript}"
 
         response = self._client.chat.completions.create(
             model=self._model,

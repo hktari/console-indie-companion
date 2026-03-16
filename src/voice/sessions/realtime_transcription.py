@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Any, Optional
 
@@ -92,6 +93,7 @@ class RealtimeTranscriptionSession:
 
         self._active_lock = asyncio.Lock()
         self._last_response: Optional[str] = None
+        self._pending_submit: Optional[Future[Optional[str]]] = None
 
     async def start_transcription(self) -> None:
         """Start the transcription session."""
@@ -136,6 +138,13 @@ class RealtimeTranscriptionSession:
         if not self._realtime_transcriber:
             return
 
+        # Check if there's already a pending submit - don't queue another
+        if self._pending_submit and not self._pending_submit.done():
+            logger.debug(
+                "VAD speech stopped but previous submit still processing, skipping"
+            )
+            return
+
         # Check if there's a transcript to submit
         transcript = self._realtime_transcriber.get_buffered_transcript()
         if not transcript:
@@ -147,7 +156,9 @@ class RealtimeTranscriptionSession:
         # Schedule the async submit_transcript_and_respond in the event loop
         try:
             loop = asyncio.get_event_loop()
-            asyncio.run_coroutine_threadsafe(self.submit_transcript_and_respond(), loop)
+            self._pending_submit = asyncio.run_coroutine_threadsafe(
+                self.submit_transcript_and_respond(), loop
+            )
         except Exception as e:
             logger.error("Failed to schedule auto-submit: %s", e)
 

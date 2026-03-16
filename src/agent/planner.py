@@ -47,15 +47,11 @@ class RequestPlanner:
     def plan(
         self,
         transcript: str,
-        scene: Optional[dict[str, Any]],
-        narrative: str,
     ) -> AgentDecision:
         """Decide how to route the user request.
 
         Args:
             transcript: User's spoken input
-            scene: Current scene analysis
-            narrative: Current narrative context
 
         Returns:
             AgentDecision with routing information
@@ -153,27 +149,23 @@ class RequestPlanner:
             )
             return decision
 
-        # Check for knowledge base queries (game-specific)
-        if scene and any(
-            key in scene for key in ["location", "activity", "notable_items", "enemies"]
+        # If user is asking about something visible or game-related
+        if any(
+            word in transcript_lower
+            for word in ["what", "where", "how", "this", "that", "here"]
         ):
-            # If user is asking about something visible or game-related
-            if any(
-                word in transcript_lower
-                for word in ["what", "where", "how", "this", "that", "here"]
-            ):
-                decision = AgentDecision(
-                    route=RouteType.KNOWLEDGE_BASE,
-                    reasoning="Game context query - search knowledge base",
-                    confidence=0.75,
-                    tools_to_call=["knowledge_base_search"],
-                )
-                logger.info(
-                    "Decision: %s (Reason: %s)",
-                    decision.route.value,
-                    decision.reasoning,
-                )
-                return decision
+            decision = AgentDecision(
+                route=RouteType.KNOWLEDGE_BASE,
+                reasoning="Game context query - search knowledge base",
+                confidence=0.75,
+                tools_to_call=["knowledge_base_search"],
+            )
+            logger.info(
+                "Decision: %s (Reason: %s)",
+                decision.route.value,
+                decision.reasoning,
+            )
+            return decision
 
         # Default: direct answer (no retrieval needed)
         decision = AgentDecision(
