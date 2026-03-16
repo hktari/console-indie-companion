@@ -3,6 +3,7 @@
 import json
 import logging
 import subprocess
+import select
 from typing import Any, Protocol, cast
 from io import TextIOWrapper
 
@@ -84,9 +85,19 @@ class QmdMcpStdioClient:
         # Send initialized notification
         self._notify("notifications/initialized")
 
-    def _call(self, method: str, params: dict[str, Any] | None = None) -> Any:
+    def _call(
+        self, method: str, params: dict[str, Any] | None = None, timeout: float = 15.0
+    ) -> Any:
         if self._process is None:
             raise RuntimeError("MCP process not started")
+
+        # Check if process is still alive
+        if self._process.poll() is not None:
+            stderr_output = self._process.stderr.read() if self._process.stderr else ""
+            raise RuntimeError(
+                f"MCP process died with exit code {self._process.returncode}. "
+                f"Stderr: {stderr_output[:500]}"
+            )
 
         self._id_counter += 1
         request_id = self._id_counter
@@ -102,9 +113,50 @@ class QmdMcpStdioClient:
         stdin.write(json.dumps(request) + "\n")
         stdin.flush()
 
-        # Read response (blocking for simplicity in POC)
+        # Read response with timeout
         stdout = cast(TextIOWrapper, self._process.stdout)
+        stderr = cast(TextIOWrapper, self._process.stderr)
+        import time
+
+        start_time = time.time()
+        skipped_lines = []
+
         while True:
+            # Check timeout
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                # Capture stderr for diagnostics
+                stderr_ready, _, _ = select.select([stderr], [], [], 0)
+                stderr_output = ""
+                if stderr_ready:
+                    stderr_output = stderr.read()
+
+                error_msg = (
+                    f"MCP call to {method} timed out after {timeout}s. "
+                    f"Request ID: {request_id}, "
+                    f"Params: {json.dumps(params, indent=2) if params else 'None'}, "
+                    f"Skipped {len(skipped_lines)} non-JSON lines, "
+                    f"Process alive: {self._process.poll() is None}"
+                )
+                if stderr_output:
+                    error_msg += f", Stderr: {stderr_output[:500]}"
+                if skipped_lines:
+                    error_msg += f", Last skipped: {skipped_lines[-3:]}"
+
+                logger.error(error_msg)
+                raise TimeoutError(error_msg)
+
+            # Check if process died
+            if self._process.poll() is not None:
+                raise RuntimeError(
+                    f"MCP process exited unexpectedly with code {self._process.returncode}"
+                )
+
+            # Use select to check if data is available (with short timeout)
+            ready, _, _ = select.select([stdout], [], [], 0.1)
+            if not ready:
+                continue
+
             line = stdout.readline()
             if not line:
                 raise RuntimeError("MCP process exited unexpectedly")
@@ -112,6 +164,9 @@ class QmdMcpStdioClient:
             # Skip non-JSON lines (like build logs or warnings)
             line = line.strip()
             if not line or not line.startswith("{"):
+                if line:  # Log non-empty skipped lines
+                    skipped_lines.append(line[:100])
+                    logger.debug("Skipping non-JSON line: %s", line[:100])
                 continue
 
             try:
@@ -137,7 +192,18 @@ class QmdMcpStdioClient:
 
     def query(self, text: str, game_id: str, limit: int = 5) -> list[QmdQueryResult]:
         """Query via MCP stdio using the 'query' tool with typed sub-queries."""
+        import time
+
         self._start()
+
+        query_start = time.time()
+        logger.debug(
+            "QMD query starting: text='%s', game_id='%s', limit=%d, index='%s'",
+            text[:50],
+            game_id,
+            limit,
+            self.index_name,
+        )
 
         # Use the 'query' tool with both lex (keyword) and vec (semantic) searches
         result = self._call(
@@ -154,6 +220,9 @@ class QmdMcpStdioClient:
                 },
             },
         )
+
+        query_elapsed = time.time() - query_start
+        logger.debug("QMD query completed in %.2fs", query_elapsed)
 
         # MCP tools return { content: [{ type: 'text', text: '...' }], structuredContent: { ... } }
         structured = result.get("structuredContent", {})
