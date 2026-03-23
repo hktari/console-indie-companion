@@ -234,19 +234,31 @@ class AgentPipeline:
         return " ".join(bit for bit in scene_bits if bit and bit != "None")
 
     def _generate_reply(self, prompt_context: PromptContext) -> str:
-        """Generate LLM reply from minimal prompt context (transcript only).
+        """Generate LLM reply with conversation history context.
 
-        Scene analysis, narrative, and retrieval context are not included
-        for fast initial response. Agent can request these via tools if needed.
+        Includes recent turns verbatim plus summary of older conversation.
         """
-        user_prompt = f"Player said: {prompt_context.transcript}"
+        # Get conversation history from memory manager
+        history = self._memory_manager.get_context_for_llm()
+
+        # Build messages: system + history + current user input
+        messages = [
+            {"role": "system", "content": self._system_instructions},
+        ]
+        messages.extend(history)
+        messages.append(
+            {"role": "user", "content": f"Player said: {prompt_context.transcript}"}
+        )
+
+        logger.debug(
+            "[LLM] Sending %d messages (system + %d history + 1 current)",
+            len(messages),
+            len(history),
+        )
 
         response = self._client.chat.completions.create(
             model=self._model,
-            messages=[
-                {"role": "system", "content": self._system_instructions},
-                {"role": "user", "content": user_prompt},
-            ],
+            messages=messages,  # type: ignore[arg-type]
             temperature=0.8,
             max_tokens=160,
         )

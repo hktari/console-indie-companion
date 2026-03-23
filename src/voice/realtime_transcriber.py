@@ -129,7 +129,9 @@ class RealtimeTranscriber:
                 self._current_partial = ""
 
         elif event_type == "input_audio_buffer.speech_stopped":
-            logger.debug("Speech stopped - triggering auto-submit")
+            logger.debug("Speech stopped - waiting for transcription")
+            # Note: We don't trigger submit here - the transcription.completed
+            # event arrives AFTER speech_stopped, so we auto-submit there instead.
             if self._on_speech_stopped:
                 try:
                     self._on_speech_stopped()
@@ -144,6 +146,12 @@ class RealtimeTranscriber:
                 with self._buffer_lock:
                     self._transcript_buffer.append(transcript)
                     self._current_partial = ""
+                    buffer_state = list(self._transcript_buffer)  # snapshot for logging
+                logger.debug(
+                    "[Buffer] After append: %s (count=%d)",
+                    buffer_state,
+                    len(buffer_state),
+                )
 
                 if self._on_final_transcript:
                     try:
@@ -182,14 +190,23 @@ class RealtimeTranscriber:
             Combined transcript text.
         """
         with self._buffer_lock:
-            return " ".join(self._transcript_buffer)
+            result = " ".join(self._transcript_buffer)
+            logger.debug(
+                "[Buffer] get_buffered_transcript: '%s' (count=%d)",
+                result,
+                len(self._transcript_buffer),
+            )
+            return result
 
     def clear_buffer(self) -> None:
         """Clear the transcript buffer."""
         with self._buffer_lock:
+            old_buffer = list(self._transcript_buffer)  # snapshot for logging
             self._transcript_buffer.clear()
             self._current_partial = ""
-        logger.debug("Transcript buffer cleared")
+        logger.debug(
+            "[Buffer] Cleared (was: %s, count=%d)", old_buffer, len(old_buffer)
+        )
 
     def get_current_partial(self) -> str:
         """Get the current partial transcript (in-progress utterance).

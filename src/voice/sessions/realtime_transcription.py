@@ -85,10 +85,13 @@ class RealtimeTranscriptionSession:
             on_research_complete=lambda msg: self._tts_player.speak(msg),
         )
 
-        # Initialize realtime transcriber with auto-submit callback on speech_stopped
+        # Initialize realtime transcriber with auto-submit callback on final transcript
+        # Note: We use on_final_transcript instead of on_speech_stopped because
+        # transcription.completed arrives AFTER speech_stopped, so this avoids the race condition
+        # where we'd submit the previous utterance's transcript.
         self._realtime_transcriber = RealtimeTranscriber(
             api_key=api_key,
-            on_speech_stopped=self._on_vad_speech_stopped,
+            on_final_transcript=self._on_final_transcript_ready,
         )
 
         self._active_lock = asyncio.Lock()
@@ -118,6 +121,7 @@ class RealtimeTranscriptionSession:
 
         # Clear buffer after retrieving
         self._realtime_transcriber.clear_buffer()
+        logger.debug("[Queue] Buffer cleared, processing request")
 
         async with self._active_lock:
             reply = await self._agent.process_request(
@@ -129,11 +133,12 @@ class RealtimeTranscriptionSession:
 
             return reply
 
-    def _on_vad_speech_stopped(self) -> None:
-        """Callback triggered when VAD detects speech has stopped.
+    def _on_final_transcript_ready(self, transcript: str) -> None:
+        """Callback triggered when a final transcript is ready.
 
-        Automatically submits the buffered transcript to the agent.
-        This runs in the event loop thread, so we need to schedule the async work.
+        n        This is the correct time to auto-submit because the transcript is now
+                in the buffer. Speech_stopped fires BEFORE transcription completes,
+                causing the race condition where we'd submit the previous utterance.
         """
         if not self._realtime_transcriber:
             return
@@ -141,23 +146,20 @@ class RealtimeTranscriptionSession:
         # Check if there's already a pending submit - don't queue another
         if self._pending_submit and not self._pending_submit.done():
             logger.debug(
-                "VAD speech stopped but previous submit still processing, skipping"
+                "[Queue] Final transcript ready but previous submit still processing, skipping"
             )
             return
 
-        # Check if there's a transcript to submit
-        transcript = self._realtime_transcriber.get_buffered_transcript()
-        if not transcript:
-            logger.debug("VAD speech stopped but no transcript buffered")
-            return
-
-        logger.info("VAD detected speech stopped, auto-submitting transcript")
+        logger.info("[Queue] Final transcript ready, auto-submitting: '%s'", transcript)
 
         # Schedule the async submit_transcript_and_respond in the event loop
         try:
             loop = asyncio.get_event_loop()
             self._pending_submit = asyncio.run_coroutine_threadsafe(
                 self.submit_transcript_and_respond(), loop
+            )
+            logger.debug(
+                "[Queue] Submit scheduled, pending=%s", not self._pending_submit.done()
             )
         except Exception as e:
             logger.error("Failed to schedule auto-submit: %s", e)

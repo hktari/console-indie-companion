@@ -336,3 +336,116 @@ Keep entries concise and factual. Avoid speculation."""
         """Get the number of turns since last summary."""
         with self._lock:
             return self._turn_counter - self._last_summary_turn
+
+    def get_context_for_llm(self, max_recent_turns: int = 10) -> list[dict[str, str]]:
+        """Return conversation history formatted for OpenAI chat completions.
+
+        Uses two-tier context:
+        - Recent turns (verbatim): Last N messages for immediate conversation flow
+        - Summary context (compressed): Summary of older conversation history
+
+        Args:
+            max_recent_turns: Maximum number of recent turns to include verbatim.
+
+        Returns:
+            List of {"role": "user"/"assistant", "content": str} messages.
+        """
+        messages: list[dict[str, str]] = []
+
+        with self._lock:
+            turns_list = list(self._turns)
+            total_turns = len(turns_list)
+
+            if total_turns == 0:
+                return messages
+
+            # Determine which turns are "recent" vs "older"
+            recent_turns = (
+                turns_list[-max_recent_turns:]
+                if total_turns > max_recent_turns
+                else turns_list
+            )
+            older_turns = (
+                turns_list[:-max_recent_turns] if total_turns > max_recent_turns else []
+            )
+
+        # If there are older turns, try to load the most recent summary
+        if older_turns:
+            summary = self._load_latest_summary()
+            if summary:
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": f"To recap our session so far: {summary}",
+                    }
+                )
+
+        # Add recent turns verbatim
+        for turn in recent_turns:
+            if turn.is_event_triggered:
+                # Event-triggered responses don't have user input
+                if turn.assistant_response:
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": f"[Event] {turn.assistant_response}",
+                        }
+                    )
+            else:
+                if turn.user_input:
+                    messages.append({"role": "user", "content": turn.user_input})
+                if turn.assistant_response:
+                    messages.append(
+                        {"role": "assistant", "content": turn.assistant_response}
+                    )
+
+        logger.debug(
+            "[Context] Returning %d messages (older=%d, recent=%d)",
+            len(messages),
+            len(older_turns),
+            len(recent_turns),
+        )
+        return messages
+
+    def _load_latest_summary(self) -> Optional[str]:
+        """Load the most recent summary from disk.
+
+        Returns:
+            Summary text if found, None otherwise.
+        """
+        try:
+            # Find the most recent memory file for this game/session
+            pattern = f"memory_{self.game_id}_{self.session_id}_*.md"
+            memory_files = sorted(self.memory_dir.glob(pattern), reverse=True)
+
+            if not memory_files:
+                # Try to find any summary for this game
+                pattern = f"memory_{self.game_id}_*.md"
+                memory_files = sorted(self.memory_dir.glob(pattern), reverse=True)
+
+            if not memory_files:
+                return None
+
+            # Read the most recent one
+            content = memory_files[0].read_text(encoding="utf-8")
+
+            # Extract the summary section (first paragraph after header)
+            lines = content.split("\n")
+            summary_lines = []
+            in_summary = False
+
+            for line in lines:
+                if line.startswith("## Summary"):
+                    in_summary = True
+                    continue
+                if in_summary:
+                    if line.startswith("##"):
+                        break
+                    if line.strip():
+                        summary_lines.append(line.strip())
+
+            return " ".join(summary_lines) if summary_lines else None
+
+        except Exception:
+            logger.debug("Failed to load summary from disk", exc_info=True)
+            return None
